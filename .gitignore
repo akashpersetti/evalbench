@@ -1,0 +1,13 @@
+.env
+evalbench.db
+
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+env/
+
+.pytest_cache/
+web/node_modules/
+web/.next/
