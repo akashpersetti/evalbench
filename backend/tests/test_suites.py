@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
+from inspect import signature
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
+from pydantic_core import PydanticUndefined
 
 from evalbench.models import (
     AggregatedModelRow,
@@ -35,6 +38,91 @@ METRIC_RECORD_FIELDS = (
     "created_at",
 )
 
+LOCKED_PUBLIC_MODEL_SCHEMAS = {
+    MetricRecord: {
+        "id": (str, True, PydanticUndefined, None),
+        "run_id": (str, True, PydanticUndefined, None),
+        "suite": (str, True, PydanticUndefined, None),
+        "domain": (str, True, PydanticUndefined, None),
+        "model": (str, True, PydanticUndefined, None),
+        "provider": (str, True, PydanticUndefined, None),
+        "model_family": (str, True, PydanticUndefined, None),
+        "task_id": (str, True, PydanticUndefined, None),
+        "latency_ms": (float, True, PydanticUndefined, None),
+        "prompt_tokens": (int, True, PydanticUndefined, None),
+        "completion_tokens": (int, True, PydanticUndefined, None),
+        "cost_usd": (float, True, PydanticUndefined, None),
+        "error": (str | None, True, PydanticUndefined, None),
+        "refused": (bool, True, PydanticUndefined, None),
+        "metrics": (dict[str, float], True, PydanticUndefined, None),
+        "created_at": (datetime, True, PydanticUndefined, None),
+    },
+    RunConfig: {
+        "suite": (str, True, PydanticUndefined, None),
+        "domain": (
+            Literal[
+                "overall", "software", "finance", "legal", "medical", "physics"
+            ],
+            True,
+            PydanticUndefined,
+            None,
+        ),
+        "models": (list[str], True, PydanticUndefined, None),
+        "judge_model": (str, False, "anthropic/claude-sonnet-4-5", None),
+    },
+    SuiteResult: {
+        "run_id": (str, True, PydanticUndefined, None),
+        "records": (list[MetricRecord], True, PydanticUndefined, None),
+    },
+    Estimate: {
+        "mean": (float | None, True, PydanticUndefined, None),
+        "n": (int, True, PydanticUndefined, None),
+        "ci_low": (float | None, True, PydanticUndefined, None),
+        "ci_high": (float | None, True, PydanticUndefined, None),
+    },
+    Segment: {
+        "key": (
+            Literal["clear", "partial", "failed", "refused"],
+            True,
+            PydanticUndefined,
+            None,
+        ),
+        "label": (
+            Literal["Clear", "Partial", "Failed", "Refused"],
+            True,
+            PydanticUndefined,
+            None,
+        ),
+        "count": (int, True, PydanticUndefined, None),
+        "percentage": (float, True, PydanticUndefined, None),
+    },
+    StackedBreakdown: {
+        "metric_key": (str, True, PydanticUndefined, None),
+        "n": (int, True, PydanticUndefined, None),
+        "segments": (list[Segment], True, PydanticUndefined, None),
+    },
+    AggregatedModelRow: {
+        "model": (str, True, PydanticUndefined, None),
+        "provider": (str, True, PydanticUndefined, None),
+        "model_family": (str, True, PydanticUndefined, None),
+        "n": (int, True, PydanticUndefined, None),
+        "metrics": (dict[str, Estimate], True, PydanticUndefined, None),
+        "derived": (dict[str, Estimate], True, PydanticUndefined, None),
+        "stacked": (
+            dict[str, StackedBreakdown],
+            True,
+            PydanticUndefined,
+            None,
+        ),
+    },
+    ResultsResponse: {
+        "suite": (str, True, PydanticUndefined, None),
+        "domain": (str, True, PydanticUndefined, None),
+        "exclude_refusals": (bool, True, PydanticUndefined, None),
+        "rows": (list[AggregatedModelRow], True, PydanticUndefined, None),
+    },
+}
+
 
 def metric_record_data() -> dict:
     return {
@@ -54,6 +142,45 @@ def metric_record_data() -> dict:
         "refused": False,
         "metrics": {"schema_valid": 1.0, "retries": 0.0},
         "created_at": datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_schema"),
+    LOCKED_PUBLIC_MODEL_SCHEMAS.items(),
+    ids=lambda value: value.__name__ if isinstance(value, type) else None,
+)
+def test_locked_public_model_schema_is_exact(model: type, expected_schema: dict) -> None:
+    actual_schema = {
+        name: (
+            field.annotation,
+            field.is_required(),
+            field.default,
+            field.default_factory,
+        )
+        for name, field in model.model_fields.items()
+    }
+
+    assert actual_schema == expected_schema
+
+
+def test_locked_task_model_schema_is_exact() -> None:
+    actual_schema = {
+        name: (
+            field.annotation,
+            field.is_required(),
+            field.default,
+            field.default_factory,
+        )
+        for name, field in Task.model_fields.items()
+    }
+
+    assert actual_schema == {
+        "id": (str, True, PydanticUndefined, None),
+        "domain": (str, True, PydanticUndefined, None),
+        "prompt": (str, True, PydanticUndefined, None),
+        "payload": (dict[str, Any], False, PydanticUndefined, dict),
+        "requires_generation": (bool, False, True, None),
     }
 
 
@@ -216,6 +343,15 @@ def test_suite_enforces_all_locked_abstract_methods() -> None:
     assert Suite.__abstractmethods__ == {"load_tasks", "build_prompt", "evaluate"}
 
 
+def test_suite_method_signatures_match_locked_contract() -> None:
+    assert str(signature(Suite.load_tasks)) == "(self, domain: 'str') -> 'list[Task]'"
+    assert str(signature(Suite.build_prompt)) == "(self, task: 'Task') -> 'list[dict]'"
+    assert str(signature(Suite.evaluate)) == (
+        "(self, task: 'Task', raw_output: 'str', judge: 'Judge') "
+        "-> 'dict[str, float]'"
+    )
+
+
 @pytest.mark.parametrize(
     "raw_output",
     [
@@ -236,6 +372,7 @@ def test_default_refusal_detection_is_case_and_whitespace_insensitive(
     [
         "The answer is 42.",
         "I can assist with that request.",
+        "As an airline, we publish route guidance.",
         "This system is described as an artificial intelligence model.",
     ],
 )

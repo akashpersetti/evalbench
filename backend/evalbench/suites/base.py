@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,10 @@ if TYPE_CHECKING:
     from evalbench.judge import Judge
 
 
-_REFUSAL_PHRASES = ("i can't assist", "i cannot comply", "as an ai")
+_REFUSAL_PATTERNS = tuple(
+    re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)")
+    for phrase in ("i can't assist", "i cannot comply", "as an ai")
+)
 
 
 class Task(BaseModel):
@@ -41,4 +45,4 @@ class Suite(ABC):
 
     def detect_refusal(self, raw_output: str) -> bool:
         normalized_output = " ".join(raw_output.lower().split())
-        return any(phrase in normalized_output for phrase in _REFUSAL_PHRASES)
+        return any(pattern.search(normalized_output) for pattern in _REFUSAL_PATTERNS)
