@@ -14,7 +14,7 @@ dependencies = [
     "pydantic>=2",
     "pydantic-settings",
     "litellm",
-    "sqlalchemy>=2",
+    "sqlalchemy[asyncio]>=2",
     "aiosqlite",
     "python-dotenv",
 ]
