@@ -457,6 +457,8 @@ def test_structured_json_extracts_one_value_from_supported_output_forms(
         ('{"answer":', "invalid JSON"),
         ('{"answer": 1}\n[2]', "ambiguous"),
         ('{"answer": 1}\n42', "ambiguous"),
+        ('{"answer": 1}\n42 43', "ambiguous"),
+        ('{"answer": true}\ntrue false', "ambiguous"),
         ('{"answer": 1}\nnot JSON { prose', "ambiguous"),
     ],
 )

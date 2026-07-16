@@ -46,7 +46,7 @@ def extract_json(raw_output: str) -> Any:
         raise ValueError("invalid JSON: incomplete value")
 
     trailing = raw_output[end + 1 :]
-    if "{" in trailing or "[" in trailing or _is_complete_json_value(trailing):
+    if "{" in trailing or "[" in trailing or _has_json_value_sequence(trailing):
         raise ValueError("ambiguous JSON: found another value")
     return _load_json(raw_output[start : end + 1])
 
@@ -210,15 +210,26 @@ def _load_json(value: str) -> Any:
         raise ValueError(f"invalid JSON: {error.msg}") from error
 
 
-def _is_complete_json_value(value: str) -> bool:
+def _has_json_value_sequence(value: str) -> bool:
     candidate = value.strip()
     if not candidate:
         return False
     try:
-        _, end = json.JSONDecoder().raw_decode(candidate)
+        decoder = json.JSONDecoder()
+        _, end = decoder.raw_decode(candidate)
     except json.JSONDecodeError:
         return False
-    return not candidate[end:].strip()
+    trailing = candidate[end:]
+    if not trailing.strip():
+        return True
+    if not trailing[0].isspace():
+        return False
+    additional = trailing.lstrip()
+    try:
+        _, end = decoder.raw_decode(additional)
+    except json.JSONDecodeError:
+        return False
+    return end == len(additional) or additional[end].isspace()
 
 
 def _concise_validation_error(error: ValidationError) -> str:
