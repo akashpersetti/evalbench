@@ -423,6 +423,31 @@ def test_structured_schema_preserves_an_absent_optional_nullable_field() -> None
     assert error is None
 
 
+def test_structured_schema_preserves_a_valid_explicit_default() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"retries": {"type": "integer", "default": 3}},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    model = model_from_schema("Defaulted", schema)
+
+    assert model().retries == 3
+
+
+def test_structured_schema_rejects_an_invalid_explicit_default_at_its_path() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"retries": {"type": "integer", "default": "wrong"}},
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(ValueError, match=r"\$\.properties\.retries"):
+        model_from_schema("InvalidDefault", schema)
+
+
 def test_structured_schema_rejects_unsupported_constructs_with_the_schema_path() -> None:
     schema = {
         "type": "object",

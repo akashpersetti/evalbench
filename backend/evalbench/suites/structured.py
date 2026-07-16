@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
 
 _FENCED_JSON = re.compile(
@@ -138,6 +138,7 @@ def _object_model(name: str, schema: dict[str, Any], path: str) -> type[BaseMode
             default = None
         elif isinstance(field_schema, dict) and "default" in field_schema:
             default = field_schema["default"]
+            _validate_default(annotation, default, field_path)
         else:
             _unsupported(
                 field_path,
@@ -146,6 +147,13 @@ def _object_model(name: str, schema: dict[str, Any], path: str) -> type[BaseMode
         fields[field_name] = (annotation, default)
 
     return create_model(name, __config__=_MODEL_CONFIG, **fields)
+
+
+def _validate_default(annotation: Any, default: Any, path: str) -> None:
+    try:
+        TypeAdapter(annotation).validate_python(default, strict=True)
+    except ValidationError as error:
+        raise ValueError(f"invalid default at {path}") from error
 
 
 def _nullable_annotation(name: str, schema: dict[str, Any], path: str) -> Any:
