@@ -4,7 +4,7 @@ import subprocess
 import sys
 import textwrap
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,7 +12,9 @@ from uuid import UUID
 
 import litellm
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+import evalbench.api.app as api_module
 import evalbench.judge as judge_module
 import evalbench.registry as registry_module
 import evalbench.runner as runner_module
@@ -29,6 +31,7 @@ from evalbench.store import (
     create_session_factory,
     get_run_records,
     init_db,
+    save_records,
 )
 from evalbench.suites.base import Suite, Task
 
@@ -1675,3 +1678,335 @@ def test_main_returns_nonzero_when_settings_loading_fails(monkeypatch) -> None:
     )
 
     assert exit_code != 0
+
+
+@pytest.fixture
+async def api_client(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'api.sqlite3'}")
+    await init_db(engine)
+    factory = create_session_factory(engine)
+
+    async def reject_real_run(*args: Any, **kwargs: Any) -> SuiteResult:
+        raise AssertionError("real run executor called")
+
+    monkeypatch.setattr(registry_module, "SUITES", {})
+    api_module.app.dependency_overrides[api_module.get_session_factory] = (
+        lambda: factory
+    )
+    api_module.app.dependency_overrides[api_module.get_run_executor] = (
+        lambda: reject_real_run
+    )
+    transport = ASGITransport(app=api_module.app)
+    try:
+        async with AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            yield client, factory
+    finally:
+        api_module.app.dependency_overrides.clear()
+        await engine.dispose()
+
+
+async def test_api_lifespan_initializes_and_disposes_default_engine(
+    monkeypatch,
+) -> None:
+    events: list[tuple[str, object]] = []
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            events.append(("dispose", self))
+
+    async def fake_init_db(engine: object) -> None:
+        events.append(("init", engine))
+
+    engine = FakeEngine()
+    monkeypatch.setattr(api_module, "default_engine", engine)
+    monkeypatch.setattr(api_module, "init_db", fake_init_db)
+
+    async with api_module.app.router.lifespan_context(api_module.app):
+        assert events == [("init", engine)]
+
+    assert events == [("init", engine), ("dispose", engine)]
+
+
+async def test_api_suites_is_empty_for_phase_one_registry(api_client) -> None:
+    client, _ = api_client
+
+    response = await client.get("/suites")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_api_suites_returns_sorted_exact_metadata(api_client) -> None:
+    client, _ = api_client
+    registry_module.SUITES.update(
+        {
+            "fake": FakeSuite(),
+            "aggregation": AggregationSuite(),
+        }
+    )
+
+    response = await client.get("/suites")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "name": "aggregation",
+            "metric_keys": AggregationSuite.metric_keys,
+            "display_metrics": AggregationSuite.display_metrics,
+        },
+        {
+            "name": "fake",
+            "metric_keys": FakeSuite.metric_keys,
+            "display_metrics": FakeSuite.display_metrics,
+        },
+    ]
+    assert all(
+        set(metadata) == {"name", "metric_keys", "display_metrics"}
+        for metadata in response.json()
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        (
+            "POST",
+            "/runs",
+            {
+                "suite": "missing",
+                "domain": "overall",
+                "models": ["synthetic/model"],
+            },
+        ),
+        ("GET", "/results?suite=missing&domain=overall", None),
+    ],
+)
+async def test_api_unknown_suite_returns_404(
+    api_client, method: str, path: str, payload: dict[str, Any] | None
+) -> None:
+    client, _ = api_client
+
+    response = await client.request(method, path, json=payload)
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "suite": "fake",
+            "domain": "unknown",
+            "models": ["synthetic/model"],
+        },
+        {"suite": "fake", "domain": "overall", "models": []},
+        {"suite": "fake", "domain": "overall"},
+    ],
+)
+async def test_api_post_runs_enforces_run_config_validation(
+    api_client, payload: dict[str, Any]
+) -> None:
+    client, _ = api_client
+    registry_module.SUITES["fake"] = FakeSuite()
+
+    response = await client.post("/runs", json=payload)
+
+    assert response.status_code == 422
+
+
+async def test_api_post_runs_waits_for_fake_executor_persistence(
+    api_client,
+) -> None:
+    client, factory = api_client
+    registry_module.SUITES["fake"] = FakeSuite()
+    record = make_metric_record(
+        record_id="api-run-record",
+        suite="fake",
+        latency_ms=12.0,
+        cost_usd=0.5,
+        metrics={"score": 1.0, "output_length": 4.0},
+    ).model_copy(
+        update={
+            "run_id": "run-api",
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    received: list[RunConfig] = []
+
+    async def fake_run_executor(
+        config: RunConfig, *, session_factory
+    ) -> SuiteResult:
+        received.append(config)
+        assert session_factory is factory
+        await save_records(session_factory, [record])
+        return SuiteResult(run_id="run-api", records=[record])
+
+    api_module.app.dependency_overrides[api_module.get_run_executor] = (
+        lambda: fake_run_executor
+    )
+
+    response = await client.post(
+        "/runs",
+        json={
+            "suite": "fake",
+            "domain": "software",
+            "models": ["synthetic/model"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-api"}
+    assert received == [
+        RunConfig(
+            suite="fake",
+            domain="software",
+            models=["synthetic/model"],
+        )
+    ]
+    assert await get_run_records(factory, "run-api") == [record]
+
+    raw_response = await client.get("/runs/run-api")
+    assert raw_response.status_code == 200
+    assert [item["id"] for item in raw_response.json()] == ["api-run-record"]
+
+
+async def test_api_results_applies_all_filters_and_returns_locked_shapes(
+    api_client,
+) -> None:
+    client, factory = api_client
+    registry_module.SUITES["aggregation"] = AggregationSuite()
+    now = datetime.now(timezone.utc)
+
+    def api_record(
+        record_id: str,
+        *,
+        family: str,
+        created_at: datetime = now,
+        domain: str = "software",
+        suite: str = "aggregation",
+        refused: bool = False,
+    ) -> MetricRecord:
+        return make_metric_record(
+            record_id=record_id,
+            suite=suite,
+            domain=domain,
+            model=f"model-{family}",
+            model_family=family,
+            latency_ms=10.0,
+            cost_usd=1.0,
+            refused=refused,
+            metrics={"quality_score": 1.0, "category_score": 1.0},
+        ).model_copy(update={"created_at": created_at})
+
+    await save_records(
+        factory,
+        [
+            api_record("recent-a", family="Family A"),
+            api_record("recent-b", family="Family B"),
+            api_record("unselected-family", family="Family C"),
+            api_record(
+                "old-a",
+                family="Family A",
+                created_at=now - timedelta(days=31),
+            ),
+            api_record("wrong-domain", family="Family A", domain="finance"),
+            api_record("refused-a", family="Family A", refused=True),
+            api_record("wrong-suite", family="Family A", suite="other"),
+        ],
+    )
+
+    response = await client.get(
+        "/results",
+        params=[
+            ("suite", "aggregation"),
+            ("domain", "software"),
+            ("window_days", "30"),
+            ("exclude_refusals", "true"),
+            ("families", "Family A"),
+            ("families", "Family B"),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["suite"] == "aggregation"
+    assert body["domain"] == "software"
+    assert body["exclude_refusals"] is True
+    assert {row["model_family"] for row in body["rows"]} == {
+        "Family A",
+        "Family B",
+    }
+    assert all(row["n"] == 1 for row in body["rows"])
+    for row in body["rows"]:
+        for estimate in (*row["metrics"].values(), *row["derived"].values()):
+            assert set(estimate) == {"mean", "n", "ci_low", "ci_high"}
+        for stacked in row["stacked"].values():
+            assert "n" in stacked
+
+
+@pytest.mark.parametrize("window_days", [None, 7, 30, 90])
+async def test_api_results_accepts_legal_or_omitted_window_values(
+    api_client, window_days: int | None
+) -> None:
+    client, _ = api_client
+    registry_module.SUITES["aggregation"] = AggregationSuite()
+    params: dict[str, str | int] = {
+        "suite": "aggregation",
+        "domain": "overall",
+    }
+    if window_days is not None:
+        params["window_days"] = window_days
+
+    response = await client.get("/results", params=params)
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("window_days", [0, 8, 365, "forever"])
+async def test_api_results_rejects_illegal_window_values(
+    api_client, window_days: int | str
+) -> None:
+    client, _ = api_client
+    registry_module.SUITES["aggregation"] = AggregationSuite()
+
+    response = await client.get(
+        "/results",
+        params={
+            "suite": "aggregation",
+            "domain": "overall",
+            "window_days": window_days,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_api_raw_run_returns_404_when_no_records_exist(api_client) -> None:
+    client, _ = api_client
+
+    response = await client.get("/runs/missing-run")
+
+    assert response.status_code == 404
+
+
+async def test_api_cors_allows_only_local_frontend_origin(api_client) -> None:
+    client, _ = api_client
+    headers = {
+        "Origin": "http://localhost:3000",
+        "Access-Control-Request-Method": "GET",
+    }
+
+    response = await client.options("/suites", headers=headers)
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "http://localhost:3000"
+    )
+
+    rejected = await client.options(
+        "/suites",
+        headers={**headers, "Origin": "https://example.com"},
+    )
+    assert "access-control-allow-origin" not in rejected.headers
