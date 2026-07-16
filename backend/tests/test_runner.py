@@ -247,6 +247,11 @@ def test_execution_context_complete_passes_timeout_and_meters_call(monkeypatch) 
     messages = [{"role": "user", "content": "synthetic request"}]
     clock = iter([10.0, 10.125])
     monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+
+    def reject_global_pricing(*args: Any) -> float:
+        raise AssertionError("global pricing called instead of injected pricing")
+
+    monkeypatch.setattr(runner_module, "calculate_cost_usd", reject_global_pricing)
     pricing_calls: list[tuple[str, int, int]] = []
 
     def pricing_fn(model: str, prompt_tokens: int, completion_tokens: int) -> float:

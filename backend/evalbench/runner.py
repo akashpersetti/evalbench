@@ -1,7 +1,7 @@
 """Provider-call normalization and per-task execution metering."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import time
 from typing import Any
 
@@ -23,16 +23,21 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-def normalize_completion_response(
-    response: Any, model: str, elapsed_ms: float
-) -> CallResult:
-    """Convert a LiteLLM-style completion response into stable call metadata."""
+def _normalize_completion_fields(response: Any) -> tuple[str, int, int]:
     choices = _field(response, "choices", [])
     message = _field(choices[0], "message")
     text = _field(message, "content", "") or ""
     usage = _field(response, "usage")
     prompt_tokens = int(_field(usage, "prompt_tokens", 0) or 0)
     completion_tokens = int(_field(usage, "completion_tokens", 0) or 0)
+    return str(text), prompt_tokens, completion_tokens
+
+
+def normalize_completion_response(
+    response: Any, model: str, elapsed_ms: float
+) -> CallResult:
+    """Convert a LiteLLM-style completion response into stable call metadata."""
+    text, prompt_tokens, completion_tokens = _normalize_completion_fields(response)
     return CallResult(
         text=str(text),
         prompt_tokens=prompt_tokens,
@@ -97,14 +102,15 @@ class ExecutionContext:
         finally:
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
 
-        normalized = normalize_completion_response(response, self.model, elapsed_ms)
-        result = replace(
-            normalized,
+        text, prompt_tokens, completion_tokens = _normalize_completion_fields(response)
+        result = CallResult(
+            text=text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
             cost_usd=self._pricing_fn(
-                self.model,
-                normalized.prompt_tokens,
-                normalized.completion_tokens,
+                self.model, prompt_tokens, completion_tokens
             ),
+            latency_ms=elapsed_ms,
         )
         self.calls.append(result)
         return result
