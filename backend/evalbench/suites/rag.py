@@ -268,6 +268,88 @@ def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     ) / (left_norm * right_norm)
 
 
+def rank_chunks(
+    chunks: Sequence[Chunk],
+    vectors: Sequence[Sequence[float]],
+    query_vector: Sequence[float],
+) -> list[Chunk]:
+    """Rank chunks by cosine similarity with a deterministic ID tie-break."""
+    if len(vectors) != len(chunks):
+        raise ValueError(
+            "rank_chunks requires one vector per chunk; "
+            f"received {len(vectors)} vectors for {len(chunks)} chunks"
+        )
+
+    scored = [
+        (chunk, cosine_similarity(vector, query_vector))
+        for chunk, vector in zip(chunks, vectors)
+    ]
+    scored.sort(key=lambda item: (-item[1], item[0].id))
+    return [chunk for chunk, _ in scored]
+
+
+def retrieval_metrics(
+    ranked_chunks: Sequence[Chunk], gold_doc_ids: set[str]
+) -> dict[str, float]:
+    """Calculate deterministic retrieval metrics for one ranked query."""
+    unique_doc_ids = _unique_document_ids(ranked_chunks)
+    gold_count = len(gold_doc_ids)
+
+    recall_at_5 = (
+        len(set(unique_doc_ids[:5]).intersection(gold_doc_ids)) / gold_count
+        if gold_count
+        else 0.0
+    )
+
+    dcg_at_10 = sum(
+        (1.0 / math.log2(rank + 1))
+        for rank, doc_id in enumerate(unique_doc_ids[:10], start=1)
+        if doc_id in gold_doc_ids
+    )
+    idcg_at_10 = sum(
+        1.0 / math.log2(rank + 1)
+        for rank in range(1, min(gold_count, 10) + 1)
+    )
+    ndcg_at_10 = dcg_at_10 / idcg_at_10 if idcg_at_10 else 0.0
+
+    mrr = 0.0
+    for rank, doc_id in enumerate(unique_doc_ids, start=1):
+        if doc_id in gold_doc_ids:
+            mrr = 1.0 / rank
+            break
+
+    retrieved_chunks = ranked_chunks[:10]
+    context_precision = (
+        sum(chunk.doc_id in gold_doc_ids for chunk in retrieved_chunks)
+        / len(retrieved_chunks)
+        if retrieved_chunks
+        else 0.0
+    )
+
+    return {
+        "recall_at_5": _clamp_metric(recall_at_5),
+        "ndcg_at_10": _clamp_metric(ndcg_at_10),
+        "mrr": _clamp_metric(mrr),
+        "context_precision": _clamp_metric(context_precision),
+    }
+
+
+def _unique_document_ids(ranked_chunks: Sequence[Chunk]) -> list[str]:
+    """Preserve the first ranked chunk for each document."""
+    seen: set[str] = set()
+    document_ids: list[str] = []
+    for chunk in ranked_chunks:
+        if chunk.doc_id not in seen:
+            seen.add(chunk.doc_id)
+            document_ids.append(chunk.doc_id)
+    return document_ids
+
+
+def _clamp_metric(value: float) -> float:
+    """Keep metric round-off within its mathematically valid unit interval."""
+    return float(min(1.0, max(0.0, value)))
+
+
 def _lexical_tokens(text: str) -> list[str]:
     # v1 deliberately uses whitespace tokens so all embedders share one chunking rule.
     return re.findall(r"\S+", text)
