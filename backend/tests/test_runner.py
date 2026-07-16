@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 import random
@@ -35,6 +36,7 @@ from evalbench.store import (
     save_records,
 )
 from evalbench.suites.base import Suite, Task
+from evalbench.suites.structured import StructuredSuite
 
 
 @pytest.mark.parametrize(
@@ -1608,6 +1610,193 @@ async def test_execute_run_records_persists_and_continues_with_bounded_concurren
         "synthetic timeout output 524a",
     ):
         assert secret not in progress
+
+
+async def test_structured_run_persists_complete_records_and_api_shapes(
+    api_client, monkeypatch, tmp_path: Path
+) -> None:
+    client, factory = api_client
+    task_row = {
+        "id": "software-01",
+        "domain": "software",
+        "prompt": "Return the readiness record.",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "summary": {"type": "string"},
+            },
+            "required": ["status", "summary"],
+            "additionalProperties": False,
+        },
+        "expected": {"status": "ready", "summary": "Operational"},
+        "free_text_fields": ["/summary"],
+        "adversarial": False,
+    }
+    (tmp_path / "software.jsonl").write_text(
+        json.dumps(task_row) + "\n", encoding="utf-8"
+    )
+    suite = StructuredSuite(data_root=tmp_path)
+
+    fake_judges: list[Any] = []
+
+    class FakeJudge:
+        def __init__(self, model: str, **_: Any) -> None:
+            self.model = model
+            self.calls: list[dict[str, str]] = []
+            fake_judges.append(self)
+
+        def score_free_text(self, **kwargs: str) -> float:
+            self.calls.append(kwargs)
+            return 1.0
+
+    class FakeTarget:
+        def __init__(self) -> None:
+            self.contents = [
+                "not valid structured output",
+                json.dumps({"status": "ready", "summary": "Operational"}),
+            ]
+            self.calls: list[dict[str, Any]] = []
+
+        def __call__(self, **kwargs: Any) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            content = self.contents.pop(0)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=content))
+                ],
+                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7)
+                if len(self.calls) == 1
+                else SimpleNamespace(prompt_tokens=13, completion_tokens=5),
+            )
+
+    target = FakeTarget()
+
+    def reject_real_provider_call(**_: Any) -> None:
+        raise AssertionError("real provider call attempted")
+
+    clock = iter([100.0, 100.125, 200.0, 200.250])
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:",
+        litellm_timeout_seconds=1.0,
+        max_concurrency=1,
+    )
+    config = RunConfig(
+        suite="structured",
+        domain="software",
+        models=["openai/gpt-4o"],
+    )
+
+    monkeypatch.setattr(registry_module, "SUITES", {})
+    registry_module.register_suite(suite)
+    monkeypatch.setattr(runner_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(runner_module, "Judge", FakeJudge)
+    monkeypatch.setattr(litellm, "completion", reject_real_provider_call)
+    monkeypatch.setattr(litellm, "embedding", reject_real_provider_call)
+
+    with monkeypatch.context() as clocked:
+        clocked.setattr(
+            runner_module.time, "perf_counter", lambda: next(clock)
+        )
+        result = await runner_module.execute_run(
+            config,
+            session_factory=factory,
+            completion_fn=target,
+            embedding_fn=reject_real_provider_call,
+        )
+    persisted = await get_run_records(factory, result.run_id)
+
+    assert len(result.records) == 1
+    record = result.records[0]
+    assert_uuid4(result.run_id)
+    assert_uuid4(record.id)
+    assert record.run_id == result.run_id
+    assert (
+        record.suite,
+        record.domain,
+        record.model,
+        record.provider,
+        record.model_family,
+        record.task_id,
+    ) == (
+        "structured",
+        "software",
+        "openai/gpt-4o",
+        "openai",
+        "OpenAI",
+        "software-01",
+    )
+    assert record.latency_ms == pytest.approx(375.0)
+    assert record.prompt_tokens == 24
+    assert record.completion_tokens == 12
+    assert record.cost_usd == pytest.approx(
+        calculate_cost_usd("openai/gpt-4o", 24, 12)
+    )
+    assert record.error is None
+    assert record.refused is False
+    assert record.metrics == {
+        "first_attempt_valid": 0.0,
+        "schema_valid": 1.0,
+        "retries_to_valid": 1.0,
+        "retry_cost_usd": calculate_cost_usd("openai/gpt-4o", 13, 5),
+        "field_accuracy": 1.0,
+    }
+    assert set(record.metrics) == {
+        "first_attempt_valid",
+        "schema_valid",
+        "retries_to_valid",
+        "retry_cost_usd",
+        "field_accuracy",
+    }
+    assert record.created_at.tzinfo is not None
+    assert record.created_at.utcoffset() == timedelta(0)
+    assert persisted == result.records
+    assert len(target.calls) == 2
+    assert len(fake_judges) == 1
+    assert len(fake_judges[0].calls) == 1
+
+    suites_response = await client.get("/suites")
+    assert suites_response.status_code == 200
+    assert suites_response.json() == [
+        {
+            "name": "structured",
+            "metric_keys": suite.metric_keys,
+            "display_metrics": suite.display_metrics,
+        }
+    ]
+
+    results_response = await client.get(
+        "/results", params={"suite": "structured", "domain": "software"}
+    )
+    assert results_response.status_code == 200
+    body = results_response.json()
+    assert body["suite"] == "structured"
+    assert body["domain"] == "software"
+    assert body["exclude_refusals"] is False
+    assert len(body["rows"]) == 1
+    row = body["rows"][0]
+    assert (row["model"], row["provider"], row["model_family"], row["n"]) == (
+        "openai/gpt-4o",
+        "openai",
+        "OpenAI",
+        1,
+    )
+    for metric_key, expected in record.metrics.items():
+        estimate = row["metrics"][metric_key]
+        assert set(estimate) == {"mean", "n", "ci_low", "ci_high"}
+        assert estimate["n"] == 1
+        assert estimate["mean"] == pytest.approx(expected)
+        assert estimate["ci_low"] is not None
+        assert estimate["ci_high"] is not None
+    assert row["derived"]["p95_latency_ms"]["n"] == 1
+    assert row["derived"]["p95_latency_ms"]["ci_low"] == pytest.approx(375.0)
+    assert row["derived"]["p95_latency_ms"]["ci_high"] == pytest.approx(375.0)
+    for metric_key in (
+        "first_attempt_valid",
+        "schema_valid",
+        "field_accuracy",
+    ):
+        assert row["stacked"][metric_key]["n"] == 1
 
 
 async def test_refusal_detector_failure_becomes_one_record_and_run_continues(

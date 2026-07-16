@@ -1294,6 +1294,13 @@ def test_list_suites_sorts_by_name(monkeypatch) -> None:
         ]
 
 
+def test_registry_registers_only_the_structured_suite() -> None:
+    assert [suite.name for suite in registry_module.list_suites()] == [
+        "structured"
+    ]
+    assert isinstance(registry_module.get_suite("structured"), StructuredSuite)
+
+
 @pytest.mark.parametrize(
     "suite",
     registry_module.list_suites(),
@@ -1367,7 +1374,7 @@ def _assert_suite_contract(suite: Suite) -> None:
             metrics = suite.evaluate(task, "", judge)
         finally:
             task._execution_context = None
-        assert set(metrics).issubset(suite.metric_keys)
+        assert set(metrics) == set(suite.metric_keys)
         assert all(isinstance(value, float) for value in metrics.values())
 
 

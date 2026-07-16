@@ -1,6 +1,7 @@
 """Explicit suite registration without discovery or import side effects."""
 
 from evalbench.suites.base import Suite
+from evalbench.suites.structured import StructuredSuite
 
 
 SUITES: dict[str, Suite] = {}
@@ -29,4 +30,4 @@ def list_suites() -> list[Suite]:
     return sorted(SUITES.values(), key=lambda suite: suite.name)
 
 
-# Explicit suite imports and register_suite(...) calls begin in Phase 2.
+register_suite(StructuredSuite())
