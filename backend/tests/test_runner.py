@@ -1760,8 +1760,45 @@ async def test_structured_run_persists_complete_records_and_api_shapes(
     assert suites_response.json() == [
         {
             "name": "structured",
-            "metric_keys": suite.metric_keys,
-            "display_metrics": suite.display_metrics,
+            "metric_keys": [
+                "first_attempt_valid",
+                "schema_valid",
+                "retries_to_valid",
+                "retry_cost_usd",
+                "field_accuracy",
+            ],
+            "display_metrics": [
+                {
+                    "key": "schema_valid",
+                    "label": "Schema valid",
+                    "format": "percent",
+                    "higher_is_better": True,
+                },
+                {
+                    "key": "first_attempt_valid",
+                    "label": "First-attempt valid",
+                    "format": "percent",
+                    "higher_is_better": True,
+                },
+                {
+                    "key": "field_accuracy",
+                    "label": "Field accuracy",
+                    "format": "percent",
+                    "higher_is_better": True,
+                },
+                {
+                    "key": "retries_to_valid",
+                    "label": "Retries to valid",
+                    "format": "number",
+                    "higher_is_better": False,
+                },
+                {
+                    "key": "retry_cost_usd",
+                    "label": "Retry cost",
+                    "format": "currency",
+                    "higher_is_better": False,
+                },
+            ],
         }
     ]
 
