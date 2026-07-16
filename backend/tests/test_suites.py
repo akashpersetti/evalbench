@@ -495,6 +495,17 @@ def test_structured_legal_06_prompt_requests_defaulted_schedule_fields() -> None
     assert "days_after_service is 0" in row["prompt"]
 
 
+def test_structured_prompts_state_expected_synthetic_identifiers() -> None:
+    rows = {row["id"]: row for row in _structured_dataset_rows()}
+
+    assert 'source document title is "Synthetic memorandum SM-04"' in rows[
+        "legal-04"
+    ]["prompt"]
+    assert 'synthetic protocol ID is "SIM-TRIAL-7"' in rows["medical-06"][
+        "prompt"
+    ]
+
+
 def test_structured_dataset_free_text_pointers_resolve_without_expected_leakage() -> None:
     for row in _structured_dataset_rows():
         pointers = row["free_text_fields"]
