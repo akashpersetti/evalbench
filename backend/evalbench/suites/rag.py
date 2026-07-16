@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from evalbench.suites.base import Suite, Task
 
@@ -28,6 +30,13 @@ class Document:
     id: str
     domain: str
     title: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    id: str
+    doc_id: str
     text: str
 
 
@@ -170,6 +179,206 @@ def resolve_litellm_embedder(embedder: str) -> str:
         "voyage-3": "voyage/voyage-3",
         "cohere": "cohere/embed-v4.0",
     }.get(embedder, embedder)
+
+
+def chunk_fixed_512(documents: Sequence[Document]) -> list[Chunk]:
+    """Create deterministic 512-token lexical windows with 64-token overlap."""
+    chunks: list[Chunk] = []
+    for document in documents:
+        tokens = _lexical_tokens(document.text)
+        for body in _window_token_groups(tokens):
+            chunks.append(_make_chunk(document, "fixed_512", body))
+    return _reindex_chunks(chunks, "fixed_512")
+
+
+def chunk_recursive(documents: Sequence[Document]) -> list[Chunk]:
+    """Recursively split documents, then pack units into bounded overlapping chunks."""
+    chunks: list[Chunk] = []
+    for document in documents:
+        units = _recursive_units(document.text)
+        for body in _recursive_token_groups(units):
+            chunks.append(_make_chunk(document, "recursive", body))
+    return _reindex_chunks(chunks, "recursive")
+
+
+def chunk_semantic(
+    documents: Sequence[Document], context: Any, embedder: str
+) -> list[Chunk]:
+    """Split sentence batches on size or low adjacent-sentence similarity."""
+    chunks: list[Chunk] = []
+    resolved_embedder = resolve_litellm_embedder(embedder)
+    for document in documents:
+        sentences = _sentences(document.text)
+        if not sentences:
+            continue
+        vectors = context.embed(sentences, embedder=resolved_embedder)
+        if len(vectors) != len(sentences):
+            raise ValueError(
+                f"embedder returned {len(vectors)} vectors for "
+                f"{len(sentences)} sentences"
+            )
+
+        current_sentences: list[str] = []
+        current_tokens: list[str] = []
+
+        def flush() -> None:
+            if current_tokens:
+                chunks.append(
+                    _make_chunk(document, "semantic", current_tokens)
+                )
+                current_sentences.clear()
+                current_tokens.clear()
+
+        for index, sentence in enumerate(sentences):
+            sentence_tokens = _lexical_tokens(sentence)
+            if len(sentence_tokens) > 512:
+                flush()
+                for body in _window_token_groups(sentence_tokens):
+                    chunks.append(_make_chunk(document, "semantic", body))
+                continue
+
+            low_similarity = (
+                len(current_sentences) >= 3
+                and cosine_similarity(vectors[index - 1], vectors[index]) < 0.65
+            )
+            too_large = len(current_tokens) + len(sentence_tokens) > 512
+            if current_tokens and (too_large or low_similarity):
+                flush()
+            current_sentences.append(sentence)
+            current_tokens.extend(sentence_tokens)
+        flush()
+    return _reindex_chunks(chunks, "semantic")
+
+
+def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return cosine similarity, rejecting invalid dimensions safely."""
+    left_values = list(left)
+    right_values = list(right)
+    if not left_values or not right_values:
+        raise ValueError("cosine vectors must have nonzero dimensions")
+    if len(left_values) != len(right_values):
+        raise ValueError("cosine vectors must have equal dimensions")
+    left_norm = math.sqrt(sum(value * value for value in left_values))
+    right_norm = math.sqrt(sum(value * value for value in right_values))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum(
+        left_value * right_value
+        for left_value, right_value in zip(left_values, right_values)
+    ) / (left_norm * right_norm)
+
+
+def _lexical_tokens(text: str) -> list[str]:
+    # v1 deliberately uses whitespace tokens so all embedders share one chunking rule.
+    return re.findall(r"\S+", text)
+
+
+def _window_token_groups(
+    tokens: Sequence[str], window: int = 512, overlap: int = 64
+) -> list[list[str]]:
+    if not tokens:
+        return []
+    groups: list[list[str]] = []
+    start = 0
+    while start < len(tokens):
+        end = min(start + window, len(tokens))
+        groups.append(list(tokens[start:end]))
+        if end == len(tokens):
+            break
+        start = end - overlap
+    return groups
+
+
+def _recursive_units(text: str) -> list[list[str]]:
+    separators: tuple[str | re.Pattern[str], ...] = (
+        "\n\n",
+        "\n",
+        re.compile(r"(?<=[.!?])\s+"),
+    )
+
+    def split(value: str, level: int) -> list[list[str]]:
+        if not value.strip():
+            return []
+        if level == len(separators):
+            tokens = _lexical_tokens(value)
+            return [tokens[index : index + 512] for index in range(0, len(tokens), 512)]
+        separator = separators[level]
+        parts = (
+            re.split(separator, value)
+            if isinstance(separator, re.Pattern)
+            else value.split(separator)
+        )
+        if len(parts) == 1:
+            return split(value, level + 1)
+        units: list[list[str]] = []
+        for part in parts:
+            units.extend(split(part, level + 1))
+        return units
+
+    return split(text, 0)
+
+
+def _recursive_token_groups(units: Sequence[Sequence[str]]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    unit_index = 0
+    token_index = 0
+    previous_body: list[str] = []
+    while unit_index < len(units):
+        new_capacity = 512 if not groups else 448
+        new_tokens: list[str] = []
+        while new_capacity and unit_index < len(units):
+            remaining = list(units[unit_index][token_index:])
+            if not remaining:
+                unit_index += 1
+                token_index = 0
+                continue
+            take = min(new_capacity, len(remaining))
+            new_tokens.extend(remaining[:take])
+            new_capacity -= take
+            token_index += take
+            if token_index == len(units[unit_index]):
+                unit_index += 1
+                token_index = 0
+        if not new_tokens:
+            break
+        body = (previous_body[-64:] if previous_body else []) + new_tokens
+        groups.append(body)
+        previous_body = body
+    return groups
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part.strip()]
+
+
+def _make_chunk(
+    document: Document, strategy: str, body_tokens: Sequence[str]
+) -> Chunk:
+    body = " ".join(body_tokens)
+    return Chunk(
+        id="",
+        doc_id=document.id,
+        text=f"{document.title}\n{body}",
+    )
+
+
+def _reindex_chunks(
+    chunks: Sequence[Chunk], strategy: str
+) -> list[Chunk]:
+    """Assign per-document indices while retaining document and chunk order."""
+    counters: Counter[str] = Counter()
+    result: list[Chunk] = []
+    for chunk in chunks:
+        index = counters[chunk.doc_id]
+        counters[chunk.doc_id] += 1
+        result.append(
+            Chunk(
+                id=f"{chunk.doc_id}::{strategy}::{index:04d}",
+                doc_id=chunk.doc_id,
+                text=chunk.text,
+            )
+        )
+    return result
 
 
 def _load_dataset(data_root: Path) -> tuple[tuple[Document, ...], tuple[Query, ...]]:
