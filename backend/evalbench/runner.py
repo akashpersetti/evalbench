@@ -132,12 +132,13 @@ def percentile_interval(values: Sequence[float], q: float) -> Estimate:
 def _stacked_breakdown(
     records: Sequence[MetricRecord], metric_key: str
 ) -> StackedBreakdown | None:
+    metric_is_present = any(metric_key in record.metrics for record in records)
     categorical_values = [
         record.metrics[metric_key]
         for record in records
         if not record.refused and metric_key in record.metrics
     ]
-    if not categorical_values or not all(
+    if not metric_is_present or not all(
         value in {0.0, 0.5, 1.0} for value in categorical_values
     ):
         return None
@@ -369,16 +370,30 @@ class ExecutionContext:
             raise
         elapsed_ms = (time.perf_counter() - started_at) * 1_000
 
-        text, prompt_tokens, completion_tokens = _normalize_completion_fields(response)
-        result = CallResult(
-            text=text,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=self._pricing_fn(
-                model, prompt_tokens, completion_tokens
-            ),
-            latency_ms=elapsed_ms,
-        )
+        try:
+            text, prompt_tokens, completion_tokens = _normalize_completion_fields(
+                response
+            )
+            result = CallResult(
+                text=text,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=self._pricing_fn(
+                    model, prompt_tokens, completion_tokens
+                ),
+                latency_ms=elapsed_ms,
+            )
+        except Exception:
+            self.calls.append(
+                CallResult(
+                    text="",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    cost_usd=0.0,
+                    latency_ms=elapsed_ms,
+                )
+            )
+            raise
         self.calls.append(result)
         return response, result
 
@@ -425,16 +440,27 @@ class ExecutionContext:
             raise
         elapsed_ms = (time.perf_counter() - started_at) * 1_000
 
-        vectors, prompt_tokens = normalize_embedding_response(response)
-        self.calls.append(
-            CallResult(
+        try:
+            vectors, prompt_tokens = normalize_embedding_response(response)
+            result = CallResult(
                 text="",
                 prompt_tokens=prompt_tokens,
                 completion_tokens=0,
                 cost_usd=self._pricing_fn(selected_embedder, prompt_tokens, 0),
                 latency_ms=elapsed_ms,
             )
-        )
+        except Exception:
+            self.calls.append(
+                CallResult(
+                    text="",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    cost_usd=0.0,
+                    latency_ms=elapsed_ms,
+                )
+            )
+            raise
+        self.calls.append(result)
         return vectors
 
 

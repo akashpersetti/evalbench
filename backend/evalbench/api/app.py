@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from enum import IntEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,7 +101,9 @@ async def runs(
 async def results(
     suite: str,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
-    domain: str = "overall",
+    domain: Literal[
+        "overall", "software", "finance", "legal", "medical", "physics"
+    ] = "overall",
     window_days: Annotated[WindowDays | None, Query()] = None,
     exclude_refusals: bool = False,
     families: Annotated[list[str] | None, Query()] = None,

@@ -497,6 +497,128 @@ def test_failed_embedding_retains_elapsed_latency_without_usage_or_real_call(
     assert failed_call.latency_ms == pytest.approx(125.0)
 
 
+def test_completion_normalization_failure_retains_latency_in_error_record(
+    monkeypatch,
+) -> None:
+    class CompletionSuite(Suite):
+        name = "completion-normalization"
+        metric_keys = ["score"]
+        display_metrics = []
+
+        def load_tasks(self, domain: str) -> list[Task]:
+            return []
+
+        def build_prompt(self, task: Task) -> list[dict]:
+            return [{"role": "user", "content": task.prompt}]
+
+        def evaluate(
+            self, task: Task, raw_output: str, judge: judge_module.Judge
+        ) -> dict[str, float]:
+            return {"score": 1.0}
+
+    completion_calls: list[dict[str, Any]] = []
+
+    def malformed_completion(**kwargs: Any) -> SimpleNamespace:
+        completion_calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=91, completion_tokens=17),
+        )
+
+    clock = iter([50.0, 50.2])
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+    task = Task(
+        id="completion-normalization-1",
+        domain="software",
+        prompt="synthetic malformed completion",
+    )
+
+    record = runner_module._execute_one_sync(
+        suite=CompletionSuite(),
+        task=task,
+        model="openai/gpt-4o",
+        run_id="run-completion-normalization",
+        judge_model="anthropic/claude-sonnet-4-5",
+        completion_fn=malformed_completion,
+        embedding_fn=FakeEmbedding(),
+        timeout_seconds=3.0,
+        pricing_fn=lambda *_: (_ for _ in ()).throw(
+            AssertionError("malformed response must not be priced")
+        ),
+    )
+
+    assert len(completion_calls) == 1
+    assert record.error == "IndexError"
+    assert record.latency_ms == pytest.approx(200.0)
+    assert record.prompt_tokens == 0
+    assert record.completion_tokens == 0
+    assert record.cost_usd == 0.0
+    assert record.metrics == {"score": 0.0}
+    assert task._execution_context is None
+
+
+def test_embedding_normalization_failure_retains_latency_in_error_record(
+    monkeypatch,
+) -> None:
+    class EmbeddingSuite(Suite):
+        name = "embedding-normalization"
+        metric_keys = ["score"]
+        display_metrics = []
+
+        def load_tasks(self, domain: str) -> list[Task]:
+            return []
+
+        def build_prompt(self, task: Task) -> list[dict]:
+            return []
+
+        def evaluate(
+            self, task: Task, raw_output: str, judge: judge_module.Judge
+        ) -> dict[str, float]:
+            task._execution_context.embed([task.prompt])
+            return {"score": 1.0}
+
+    embedding_calls: list[dict[str, Any]] = []
+
+    def malformed_embedding(**kwargs: Any) -> SimpleNamespace:
+        embedding_calls.append(kwargs)
+        return SimpleNamespace(
+            data=[SimpleNamespace(embedding=None)],
+            usage=SimpleNamespace(prompt_tokens=73),
+        )
+
+    clock = iter([60.0, 60.125])
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+    task = Task(
+        id="embedding-normalization-1",
+        domain="physics",
+        prompt="synthetic malformed embedding",
+        requires_generation=False,
+    )
+
+    record = runner_module._execute_one_sync(
+        suite=EmbeddingSuite(),
+        task=task,
+        model="openai/text-embedding-3-small::fixed_512",
+        run_id="run-embedding-normalization",
+        judge_model="anthropic/claude-sonnet-4-5",
+        completion_fn=FakeCompletion(),
+        embedding_fn=malformed_embedding,
+        timeout_seconds=3.0,
+        pricing_fn=lambda *_: (_ for _ in ()).throw(
+            AssertionError("malformed response must not be priced")
+        ),
+    )
+
+    assert len(embedding_calls) == 1
+    assert record.error == "TypeError"
+    assert record.latency_ms == pytest.approx(125.0)
+    assert record.prompt_tokens == 0
+    assert record.completion_tokens == 0
+    assert record.cost_usd == 0.0
+    assert record.metrics == {"score": 0.0}
+    assert task._execution_context is None
+
+
 def test_judge_complete_text_uses_injected_callable_timeout_and_rng() -> None:
     completion = FakeCompletion("plain text")
     rng = random.Random(17)
@@ -1043,6 +1165,57 @@ def test_aggregate_records_excludes_refusals_with_metric_specific_sample_sizes()
     assert [segment.percentage for segment in stacked.segments] == pytest.approx(
         [100.0 / 3.0, 100.0 / 3.0, 100.0 / 3.0, 0.0]
     )
+
+
+def test_aggregate_records_emits_stacked_segments_for_refusal_only_metrics() -> None:
+    records = [
+        make_metric_record(
+            record_id="refused-one",
+            latency_ms=10.0,
+            cost_usd=1.0,
+            refused=True,
+            metrics={"quality_score": 1.0, "category_score": 0.0},
+        ),
+        make_metric_record(
+            record_id="refused-two",
+            latency_ms=20.0,
+            cost_usd=1.0,
+            refused=True,
+            metrics={"quality_score": 0.0, "category_score": 0.5},
+        ),
+    ]
+
+    response = runner_module.aggregate_records(
+        suite=AggregationSuite(),
+        records=records,
+        domain="software",
+        exclude_refusals=False,
+    )
+
+    row = response.rows[0]
+    assert list(row.stacked) == ["quality_score", "category_score"]
+    for metric_key in row.stacked:
+        stacked = row.stacked[metric_key]
+        assert stacked.n == 2
+        assert [segment.key for segment in stacked.segments] == [
+            "clear",
+            "partial",
+            "failed",
+            "refused",
+        ]
+        assert [segment.label for segment in stacked.segments] == [
+            "Clear",
+            "Partial",
+            "Failed",
+            "Refused",
+        ]
+        assert [segment.count for segment in stacked.segments] == [0, 0, 0, 2]
+        assert [segment.percentage for segment in stacked.segments] == [
+            0.0,
+            0.0,
+            0.0,
+            100.0,
+        ]
 
 
 def test_aggregate_records_stacked_ties_ignore_input_order() -> None:
@@ -2042,6 +2215,18 @@ async def test_api_results_rejects_illegal_window_values(
             "domain": "overall",
             "window_days": window_days,
         },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_api_results_rejects_unsupported_domain(api_client) -> None:
+    client, _ = api_client
+    registry_module.SUITES["aggregation"] = AggregationSuite()
+
+    response = await client.get(
+        "/results",
+        params={"suite": "aggregation", "domain": "astronomy"},
     )
 
     assert response.status_code == 422
