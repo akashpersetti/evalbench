@@ -1,5 +1,7 @@
 .PHONY: api web seed run-suite
 
+MODELS ?= openai/gpt-4o
+
 api:
 	uv run uvicorn evalbench.api.app:app --reload --port 8000
 
@@ -12,6 +14,5 @@ run-suite:
 	@test -n "$(MODELS)" || (echo "MODELS is required" >&2; exit 1)
 	uv run python -m evalbench.runner --suite "$(SUITE)" --domain "$(DOMAIN)" --models "$(MODELS)"
 
-# Phase 2 delegates this target to structured with a documented demo model.
 seed:
-	@echo "structured is installed in Phase 2; seed is informational in Phase 1."
+	$(MAKE) run-suite SUITE=structured DOMAIN=software MODELS="$(MODELS)"

@@ -4,30 +4,17 @@
 
 EvalBench is a provider-agnostic LLM evaluation platform. One shared harness runs pluggable benchmark suites across providers through LiteLLM, persists per-task metric records, and exposes results for future dashboard use.
 
-## Phase 1 status
+## Current status
 
-Phase 1 delivers the dependency toolchain, core contracts, async store, runner,
-judge, registry, and minimal API. It deliberately ships no registered benchmark
-suite and no dashboard. Consequently, a fresh `GET /suites` returns `[]` and
-there are no runnable suite names yet.
+The `structured` suite is registered and runnable. It contains exactly 40
+audited tasks: eight each in `software`, `finance`, `legal`, `medical`, and
+`physics`. The current web application remains a runnable placeholder; the
+dashboard is Phase 3 work.
 
 ### Dashboard
 
 The dashboard is Phase 3 work and is not delivered in Phase 1. The current web
 application is only a runnable placeholder.
-
-### `structured` suite
-
-The `structured` suite and its dataset are Phase 2 work and are not delivered in
-Phase 1.
-
-### `latency_cost` suite
-
-The `latency_cost` suite is Phase 4 work and is not delivered in Phase 1.
-
-### `rag` suite
-
-The `rag` suite is Phase 5 work and is not delivered in Phase 1.
 
 ## Prerequisites
 
@@ -38,24 +25,34 @@ The `rag` suite is Phase 5 work and is not delivered in Phase 1.
 
 ## Environment setup
 
-Copy the example environment file and add provider credentials as needed:
+Copy the example environment file to `.env` and add provider credentials as
+needed:
 
 ```bash
 cp .env.example .env
 ```
 
-Keys are read from `.env`; do not commit `.env` or database files. The default
-database URL is `sqlite+aiosqlite:///./evalbench.db`: one local SQLite file
-accessed through SQLAlchemy's async engine and async session factory. Application
-startup creates the schema; the API disposes the engine at shutdown. Both `.env`
-and `evalbench.db` are ignored by Git.
+Keys are read from `.env`; never commit `.env` or database files. The supported
+provider variables are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, and `XAI_API_KEY`. The default judge is
+`anthropic/claude-sonnet-4-5`. The default database URL is
+`sqlite+aiosqlite:///./evalbench.db`, a local SQLite file accessed through
+SQLAlchemy's async engine and session factory. Application startup creates the
+schema and the API disposes the engine at shutdown. Both `.env` and
+`evalbench.db` are ignored by Git.
 
 ## Commands
 
 Install the project and development dependencies:
 
 ```bash
-uv sync --dev
+uv sync
+```
+
+Install the web dependencies:
+
+```bash
+npm --prefix web install
 ```
 
 Run the backend tests:
@@ -68,16 +65,39 @@ The backend test suite uses fake or injected LiteLLM completion/embedding
 callables and temporary SQLite databases. It makes no real LiteLLM or provider
 calls, so running this command does not require credentials or incur model cost.
 
-Install, lint, and build the Phase 1 web placeholder:
+Lint and build the web placeholder:
 
 ```bash
-npm --prefix web ci
 npm --prefix web run lint
 npm --prefix web run build
 ```
 
-To smoke the delivered services, use separate terminals. The API's fresh
-`/suites` response is `[]`; the web response contains `EvalBench`.
+The Makefile exposes these targets:
+
+- `make api` starts the FastAPI server on port 8000.
+- `make web` starts the Next.js placeholder on port 3000.
+- `make run-suite SUITE=<name> DOMAIN=<domain> MODELS="<model>[,<model>...]"`
+  runs a registered suite and persists its records. `SUITE` and `DOMAIN` are
+  required; `MODELS` defaults to `openai/gpt-4o` and accepts a comma-separated
+  list.
+- `make seed` runs `structured` for the `software` domain using `MODELS` from
+  the environment or command line. If omitted, it uses the explicitly priced
+  inexpensive default `openai/gpt-4o` (`$2.50` per million input tokens and
+  `$10.00` per million output tokens, standard non-batch pricing).
+
+`make seed` and `make run-suite` make real target and judge provider calls and
+therefore require the relevant keys in `.env`; they can incur provider cost.
+Tests use fakes and never invoke either API.
+
+The Definition-of-Done structured run command is:
+
+```bash
+make run-suite SUITE=structured DOMAIN=software MODELS="openai/gpt-4o,anthropic/claude-sonnet-4-5"
+```
+
+To smoke the delivered services, use separate terminals. The API's
+`/suites` response includes `structured` and its five metric keys; the web
+response contains the `EvalBench` placeholder.
 
 ```bash
 # terminal 1
@@ -96,6 +116,25 @@ make web
 # terminal 2
 curl -fsS http://127.0.0.1:3000
 ```
+
+## Structured metrics and retry accounting
+
+The structured suite emits exactly these five metric keys:
+
+- `first_attempt_valid`: `1` when the initial response conforms to the schema,
+  otherwise `0`.
+- `schema_valid`: `1` when the response becomes valid, otherwise `0`.
+- `retries_to_valid`: `0`, `1`, `2`, or `3` retry calls needed. “Up to 3×” is
+  one initial call plus at most three retry calls. If all four attempts fail,
+  this remains `3` and `schema_valid=0` identifies the failure.
+- `retry_cost_usd`: the additional cost of retry completion calls only; it is
+  `0` for a first-attempt success.
+- `field_accuracy`: the fraction of expected fields with the correct type and
+  value, using the shared judge only for declared free-text fields.
+
+The runner's universal `latency_ms`, `prompt_tokens`, `completion_tokens`, and
+`cost_usd` totals include every provider attempt, including retries.
+`retry_cost_usd` is only the retry-only subset of that total cost.
 
 ## MetricRecord contract
 
@@ -121,7 +160,9 @@ class MetricRecord(BaseModel):
     created_at: datetime
 ```
 
-The runner owns universal execution fields. A suite populates only its free-form `metrics` dictionary.
+The runner owns the universal execution fields. A suite populates only its
+free-form `metrics` dictionary, whose keys must be the suite's declared
+`metric_keys`.
 
 ## Async store
 
@@ -153,7 +194,34 @@ class Suite(ABC):
     def detect_refusal(self, raw_output: str) -> bool: ...
 ```
 
-`display_metrics` entries have the keys `key`, `label`, `format`, and `higher_is_better`. `detect_refusal` has a default heuristic and may be overridden.
+`display_metrics` entries have exactly the keys `key`, `label`, `format`, and
+`higher_is_better`. `format` must use the shared vocabulary:
+
+- `percent` displays a proportion or percentage metric.
+- `number` displays a numeric count, duration, or other non-currency value.
+- `currency` displays a USD amount.
+
+`detect_refusal` has a default heuristic and may be overridden. Suite methods
+must return task data through these interfaces; they must not add database
+columns or alter the core contracts.
+
+## Dataset layout
+
+Task data lives under `backend/data/<suite>/`. A suite's loader owns the file
+format, but the structured suite uses one JSONL file per domain:
+
+```text
+backend/data/structured/
+├── software.jsonl   # 8 tasks
+├── finance.jsonl    # 8 tasks
+├── legal.jsonl      # 8 tasks
+├── medical.jsonl    # 8 tasks
+└── physics.jsonl    # 8 tasks
+```
+
+Each structured line contains exactly the task `id`, `domain`, `prompt`,
+`schema`, `expected`, `free_text_fields`, and `adversarial` fields. IDs are
+`<domain>-NN`; `overall` loads all five domain files.
 
 ### Private execution context
 
@@ -240,8 +308,13 @@ must not render a bare mean.
 
 ## Adding a suite
 
-1. Add the suite module under `backend/evalbench/suites/`.
-2. Register one suite instance in the suite registry.
-3. Add the suite dataset in its dataset directory.
+Adding a suite is an explicit three-file change:
 
-The runner, store, and dashboard core should not need suite-specific changes.
+1. Add its suite module under `backend/evalbench/suites/`.
+2. Add one registration line/instance in `backend/evalbench/registry.py`.
+3. Add its dataset directory under `backend/data/<suite>/`.
+
+The runner, store schema, aggregation, and dashboard core should not need
+suite-specific changes. A new suite must declare its metric keys and display
+metadata, and all task executions still persist the exact `MetricRecord` shape
+above.
