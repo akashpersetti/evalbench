@@ -4,7 +4,7 @@ api:
 	uv run uvicorn evalbench.api.app:app --reload --port 8000
 
 web:
-	npm --prefix web run dev
+	npm --prefix web run dev -- --port 3000
 
 run-suite:
 	@test -n "$(SUITE)" || (echo "SUITE is required" >&2; exit 1)
