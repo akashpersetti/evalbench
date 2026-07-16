@@ -149,6 +149,8 @@ def build_retry_messages(
 def iter_expected_leaves(expected: Any, pointer: str = "") -> list[tuple[str, Any]]:
     """Flatten an expected value into RFC 6901-style leaf pointers."""
     if isinstance(expected, dict):
+        if not expected:
+            return [] if pointer == "" else [(pointer, expected)]
         return [
             leaf
             for key, value in expected.items()
@@ -157,6 +159,8 @@ def iter_expected_leaves(expected: Any, pointer: str = "") -> list[tuple[str, An
             )
         ]
     if isinstance(expected, list):
+        if not expected:
+            return [(pointer, expected)]
         return [
             leaf
             for index, value in enumerate(expected)
@@ -167,9 +171,10 @@ def iter_expected_leaves(expected: Any, pointer: str = "") -> list[tuple[str, An
 
 def field_accuracy(task: Task, parsed: Any | None, judge: Judge) -> float:
     """Score expected leaves exactly, delegating declared free-text leaves."""
-    leaves = iter_expected_leaves(task.payload["expected"])
-    if not leaves:
+    expected = task.payload["expected"]
+    if expected == {}:
         return 1.0
+    leaves = iter_expected_leaves(expected)
     if parsed is None:
         return 0.0
 

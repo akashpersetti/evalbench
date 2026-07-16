@@ -628,6 +628,45 @@ def test_structured_retry_records_only_retry_cost_after_invalid_first_attempt() 
     assert [call.cost_usd for call in context.calls] == [0.99, 0.07]
 
 
+def test_structured_retry_submits_latest_invalid_output_with_validation_feedback() -> None:
+    suite = StructuredSuite()
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    task = structured_metric_task(
+        expected={"answer": "do not disclose"}, schema=schema
+    )
+    initial_output = '{"answer": 1}'
+    second_output = '{"answer": false}'
+    context = FakeStructuredContext(
+        [
+            structured_call(second_output),
+            structured_call('{"answer": "accepted"}'),
+        ]
+    )
+    task._execution_context = context
+
+    metrics = suite.evaluate(task, initial_output, FakeStructuredJudge())
+
+    initial_error = validate_output(initial_output, schema)[2]
+    second_error = validate_output(second_output, schema)[2]
+    canonical_schema = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    assert metrics["schema_valid"] == 1.0
+    assert metrics["retries_to_valid"] == 2.0
+    assert context.messages[0][-2] == {"role": "assistant", "content": initial_output}
+    assert initial_error in context.messages[0][-1]["content"]
+    assert canonical_schema in context.messages[0][-1]["content"]
+    assert context.messages[1][-2] == {"role": "assistant", "content": second_output}
+    assert second_error in context.messages[1][-1]["content"]
+    assert canonical_schema in context.messages[1][-1]["content"]
+    assert "do not disclose" not in "\n".join(
+        message["content"] for messages in context.messages for message in messages
+    )
+
+
 def test_structured_retry_succeeds_on_fourth_total_attempt() -> None:
     suite = StructuredSuite()
     task = structured_metric_task()
@@ -682,7 +721,7 @@ def test_structured_accuracy_keeps_parseable_schema_invalid_output_for_partial_c
     assert metrics["field_accuracy"] == 0.5
 
 
-def test_structured_refusal_stays_an_evaluation_output_for_the_runner_to_classify() -> None:
+def test_structured_runner_classifies_refusal_after_suite_evaluation() -> None:
     suite = StructuredSuite()
     expected = {"answer": "I can't assist with that request."}
     schema = {
@@ -692,12 +731,29 @@ def test_structured_refusal_stays_an_evaluation_output_for_the_runner_to_classif
         "additionalProperties": False,
     }
     task = structured_metric_task(expected=expected, schema=schema)
+    task.requires_generation = True
     raw_output = json.dumps(expected)
 
-    metrics = suite.evaluate(task, raw_output, FakeStructuredJudge())
+    def completion(**_: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=raw_output))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+        )
 
-    assert metrics["schema_valid"] == 1.0
-    assert suite.detect_refusal(raw_output) is True
+    record = runner_module._execute_one_sync(
+        suite=suite,
+        task=task,
+        model="openai/gpt-4o",
+        run_id="structured-refusal",
+        judge_model="anthropic/claude-sonnet-4-5",
+        completion_fn=completion,
+        embedding_fn=lambda **_: None,
+        timeout_seconds=1.0,
+    )
+
+    assert record.error is None
+    assert record.metrics["schema_valid"] == 1.0
+    assert record.refused is True
 
 
 def test_structured_field_accuracy_requires_exact_types_values_and_nested_list_leaves() -> None:
@@ -732,6 +788,29 @@ def test_structured_field_accuracy_scores_absent_or_wrong_leaves_as_zero() -> No
 
     assert field_accuracy(task, {"left": 1}, judge) == 0.5
     assert field_accuracy(task, {"left": "1", "right": 2}, judge) == 0.5
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual"),
+    [
+        ({"items": []}, {}),
+        ({"items": []}, {"items": ["unexpected"]}),
+        ({"details": {}}, {}),
+        ({"details": {}}, {"details": {"unexpected": "value"}}),
+    ],
+)
+def test_structured_field_accuracy_scores_absent_or_wrong_empty_containers_as_zero(
+    expected: dict[str, Any], actual: dict[str, Any]
+) -> None:
+    task = structured_metric_task(expected=expected)
+
+    assert field_accuracy(task, actual, FakeStructuredJudge()) == 0.0
+
+
+def test_structured_field_accuracy_keeps_top_level_empty_expected_object_vacuously_correct() -> None:
+    task = structured_metric_task(expected={})
+
+    assert field_accuracy(task, None, FakeStructuredJudge()) == 1.0
 
 
 def test_structured_field_accuracy_uses_judge_only_for_declared_free_text_leaves() -> None:
