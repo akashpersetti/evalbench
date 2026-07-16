@@ -246,9 +246,18 @@ def aggregate_records(
                 return -1.0
             return next(iter(row.stacked.values())).segments[0].percentage
 
-        rows.sort(key=lambda row: (-clear_percentage(row), row.model))
+        rows.sort(
+            key=lambda row: (
+                -clear_percentage(row),
+                row.model,
+                row.provider,
+                row.model_family,
+            )
+        )
     else:
-        rows.sort(key=lambda row: row.model)
+        rows.sort(
+            key=lambda row: (row.model, row.provider, row.model_family)
+        )
 
     return ResultsResponse(
         suite=suite.name,

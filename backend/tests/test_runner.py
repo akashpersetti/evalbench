@@ -978,6 +978,61 @@ def test_aggregate_records_excludes_refusals_with_metric_specific_sample_sizes()
     )
 
 
+def test_aggregate_records_stacked_ties_ignore_input_order() -> None:
+    records = [
+        make_metric_record(
+            record_id="provider-a-family-a",
+            provider="provider-a",
+            model_family="Family A",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0},
+        ),
+        make_metric_record(
+            record_id="provider-a-family-z",
+            provider="provider-a",
+            model_family="Family Z",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0},
+        ),
+        make_metric_record(
+            record_id="provider-z-family-a",
+            provider="provider-z",
+            model_family="Family A",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0},
+        ),
+    ]
+    expected = [
+        ("shared-model", "provider-a", "Family A"),
+        ("shared-model", "provider-a", "Family Z"),
+        ("shared-model", "provider-z", "Family A"),
+    ]
+
+    forward = runner_module.aggregate_records(
+        suite=AggregationSuite(),
+        records=records,
+        domain="software",
+        exclude_refusals=False,
+    )
+    reversed_input = runner_module.aggregate_records(
+        suite=AggregationSuite(),
+        records=list(reversed(records)),
+        domain="software",
+        exclude_refusals=False,
+    )
+
+    assert [
+        (row.model, row.provider, row.model_family) for row in forward.rows
+    ] == expected
+    assert [
+        (row.model, row.provider, row.model_family)
+        for row in reversed_input.rows
+    ] == expected
+
+
 def test_aggregate_records_sorts_by_model_when_no_stacked_metric_exists() -> None:
     records = [
         make_metric_record(
@@ -1010,6 +1065,65 @@ def test_aggregate_records_sorts_by_model_when_no_stacked_metric_exists() -> Non
     assert [row.model for row in response.rows] == ["alpha", "zeta"]
     assert all(row.stacked == {} for row in response.rows)
     assert all("cost_adjusted_quality" not in row.derived for row in response.rows)
+
+
+def test_aggregate_records_fallback_ties_ignore_input_order() -> None:
+    records = [
+        make_metric_record(
+            record_id="provider-a-family-a",
+            suite="continuous",
+            provider="provider-a",
+            model_family="Family A",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"continuous_score": 2.0},
+        ),
+        make_metric_record(
+            record_id="provider-a-family-z",
+            suite="continuous",
+            provider="provider-a",
+            model_family="Family Z",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"continuous_score": 2.0},
+        ),
+        make_metric_record(
+            record_id="provider-z-family-a",
+            suite="continuous",
+            provider="provider-z",
+            model_family="Family A",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"continuous_score": 2.0},
+        ),
+    ]
+    expected = [
+        ("shared-model", "provider-a", "Family A"),
+        ("shared-model", "provider-a", "Family Z"),
+        ("shared-model", "provider-z", "Family A"),
+    ]
+
+    forward = runner_module.aggregate_records(
+        suite=ContinuousAggregationSuite(),
+        records=records,
+        domain="overall",
+        exclude_refusals=False,
+    )
+    reversed_input = runner_module.aggregate_records(
+        suite=ContinuousAggregationSuite(),
+        records=list(reversed(records)),
+        domain="overall",
+        exclude_refusals=False,
+    )
+
+    assert [
+        (row.model, row.provider, row.model_family) for row in forward.rows
+    ] == expected
+    assert [
+        (row.model, row.provider, row.model_family)
+        for row in reversed_input.rows
+    ] == expected
+    assert all(row.stacked == {} for row in reversed_input.rows)
 
 
 class DetectorFailingFakeSuite(FakeSuite):
