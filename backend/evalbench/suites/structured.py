@@ -381,6 +381,8 @@ def extract_json(raw_output: str) -> Any:
         raise ValueError("invalid JSON: incomplete value")
 
     trailing = raw_output[end + 1 :]
+    if _has_unmatched_trailing_closing_delimiter(trailing):
+        raise ValueError("invalid JSON: unmatched trailing closing delimiter")
     if "{" in trailing or "[" in trailing or _has_json_value_sequence(trailing):
         raise ValueError("ambiguous JSON: found another value")
     return _load_json(raw_output[start : end + 1])
@@ -548,9 +550,38 @@ def _matching_json_end(value: str, start: int) -> int | None:
 
 def _load_json(value: str) -> Any:
     try:
-        return json.loads(value)
+        return json.loads(value, parse_constant=_reject_non_standard_constant)
     except json.JSONDecodeError as error:
         raise ValueError(f"invalid JSON: {error.msg}") from error
+
+
+def _reject_non_standard_constant(constant: str) -> Any:
+    raise ValueError(f"invalid JSON: non-standard constant {constant} is not permitted")
+
+
+def _has_unmatched_trailing_closing_delimiter(value: str) -> bool:
+    stack: list[str] = []
+    quoted = False
+    escaped = False
+    matching_open = {"]": "[", "}": "{"}
+    for character in value:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+            continue
+        if character == '"':
+            quoted = True
+        elif character in "[{":
+            stack.append(character)
+        elif character in "]}":
+            if not stack or stack[-1] != matching_open[character]:
+                return True
+            stack.pop()
+    return False
 
 
 def _has_json_value_sequence(value: str) -> bool:

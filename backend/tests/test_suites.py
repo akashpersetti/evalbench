@@ -784,6 +784,33 @@ def test_structured_json_rejects_malformed_or_ambiguous_output(
         extract_json(raw_output)
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_structured_schema_rejects_non_standard_json_constants(constant: str) -> None:
+    schema = {
+        "type": "object",
+        "properties": {"value": {"type": "number"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+    parsed, valid, error = validate_output(
+        f'{{"value": {constant}}}', schema
+    )
+
+    assert parsed is None
+    assert valid is False
+    assert error is not None
+    assert "invalid JSON" in error
+
+
+@pytest.mark.parametrize("delimiter", ["]", "}"])
+def test_structured_json_rejects_unmatched_trailing_closing_delimiters(
+    delimiter: str,
+) -> None:
+    with pytest.raises(ValueError, match="unmatched trailing closing delimiter"):
+        extract_json(f'{{"x": 1}} {delimiter}')
+
+
 METRIC_SCHEMA = {
     "type": "object",
     "properties": {
