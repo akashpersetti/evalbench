@@ -1,0 +1,27 @@
+{
+  "name": "evalbench-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint --config node_modules/eslint-config-next/dist/core-web-vitals.js ."
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "recharts": "3.9.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.2",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "eslint": "9.39.3",
+    "eslint-config-next": "16.2.10",
+    "postcss": "8.5.19",
+    "tailwindcss": "4.3.2",
+    "typescript": "5.9.3"
+  }
+}
