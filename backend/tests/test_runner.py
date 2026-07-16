@@ -1,6 +1,8 @@
-import importlib
 import logging
 import random
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 from typing import Any
 
@@ -181,34 +183,72 @@ def make_context(
     )
 
 
-def test_import_and_construction_do_not_call_litellm(monkeypatch) -> None:
-    attempted_calls: list[str] = []
+def test_clean_first_import_and_construction_do_not_call_litellm() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib
+        import sys
 
-    def fail_completion(**kwargs: Any) -> None:
-        attempted_calls.append("completion")
-        raise AssertionError("real LiteLLM call attempted")
+        import litellm
 
-    def fail_embedding(**kwargs: Any) -> None:
-        attempted_calls.append("embedding")
-        raise AssertionError("real LiteLLM call attempted")
+        attempted_calls = []
 
-    monkeypatch.setattr(litellm, "completion", fail_completion)
-    monkeypatch.setattr(litellm, "embedding", fail_embedding)
+        def fail_completion(**kwargs):
+            attempted_calls.append(("completion", kwargs))
+            raise AssertionError("real LiteLLM call attempted")
 
-    importlib.reload(runner_module)
-    importlib.reload(judge_module)
-    judge_module.Judge("openai/gpt-4o", timeout_seconds=1.0)
-    runner_module.ExecutionContext(
-        run_id="run-1",
-        model="openai/gpt-4o",
-        task_id="task-1",
-        completion_fn=litellm.completion,
-        embedding_fn=litellm.embedding,
-        timeout_seconds=1.0,
-        pricing_fn=calculate_cost_usd,
+        def fail_embedding(**kwargs):
+            attempted_calls.append(("embedding", kwargs))
+            raise AssertionError("real LiteLLM call attempted")
+
+        litellm.completion = fail_completion
+        litellm.embedding = fail_embedding
+
+        assert "evalbench.judge" not in sys.modules
+        assert "evalbench.runner" not in sys.modules
+        judge_module = importlib.import_module("evalbench.judge")
+        runner_module = importlib.import_module("evalbench.runner")
+
+        judge_module.Judge("openai/gpt-4o", timeout_seconds=1.0)
+        runner_module.ExecutionContext(
+            run_id="run-1",
+            model="openai/gpt-4o",
+            task_id="task-1",
+            completion_fn=litellm.completion,
+            embedding_fn=litellm.embedding,
+            timeout_seconds=1.0,
+            pricing_fn=lambda model, prompt_tokens, completion_tokens: 0.0,
+        )
+
+        assert attempted_calls == []
+        """
     )
 
-    assert attempted_calls == []
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_judge_default_callable_is_late_bound_after_import(monkeypatch) -> None:
+    completion = FakeCompletion("late-bound response")
+    messages = [{"role": "user", "content": "late-bound request"}]
+    monkeypatch.setattr(litellm, "completion", completion)
+
+    judge = judge_module.Judge("openai/gpt-4o", timeout_seconds=6.5)
+
+    assert judge.complete_text(messages) == "late-bound response"
+    assert completion.calls == [
+        {
+            "model": "openai/gpt-4o",
+            "messages": messages,
+            "timeout": 6.5,
+        }
+    ]
 
 
 def test_normalize_completion_response_extracts_text_usage_cost_and_latency() -> None:
@@ -454,6 +494,47 @@ def test_score_free_text_clamps_judge_score(raw_score: float, expected: float) -
     )
 
     assert score == expected
+
+
+def test_score_free_text_preserves_caller_prompt_and_generic_scope() -> None:
+    completion = FakeCompletion('{"score": 0.5}')
+    judge = judge_module.Judge(
+        "openai/gpt-4o", completion_fn=completion, timeout_seconds=3.0
+    )
+    caller_content = {
+        "prompt": "caller-owned prompt 91d7",
+        "expected": "caller-owned expected answer 2a6c",
+        "actual": "caller-owned actual answer 78f1",
+        "rubric": "caller-owned rubric c404",
+    }
+
+    judge.score_free_text(**caller_content)
+
+    messages = completion.calls[0]["messages"]
+    combined_content = "\n".join(message["content"] for message in messages)
+    system_content = "\n".join(
+        message["content"] for message in messages if message["role"] == "system"
+    )
+    for value in caller_content.values():
+        assert value in combined_content
+    assert '"score"' in system_content
+    assert "0 to 1" in system_content
+
+    scoped_content = combined_content.casefold()
+    for forbidden_policy in (
+        "litellm",
+        "openai",
+        "gpt-4o",
+        "anthropic",
+        "pairwise",
+        "answer a",
+        "answer b",
+        "a/b",
+        "a-b",
+        "a or b",
+        "latency",
+    ):
+        assert forbidden_policy not in scoped_content
 
 
 @pytest.mark.parametrize("content", ['{"other": 0.5}', '{"score": "bad"}'])
