@@ -59,6 +59,8 @@ Whole-phase gate:
 Final response must report: DONE or BLOCKED; final commit hash; task ledger summary; exact test/lint/build/smoke commands and results; whole-phase review verdict; changed paths; remaining Minor findings; and any real API calls made (normally none). Then stop. Do not begin Phase 2. Tell the user to /clear and use the Phase 2 controller prompt.
 ```
 
+
+
 ## Phase 2 controller prompt
 
 ```text
@@ -91,12 +93,6 @@ For every Task N, follow the official subagent-driven-development loop exactly:
 6. Resolve “cannot verify” items. Send Critical/Important findings to a fixer, require covering-test evidence appended to the report, and re-review. Record Minor items in the ledger.
 7. Mark complete only after both spec and quality approval.
 
-Model routing when selectable:
-- Standard model for schema conversion, retry/evaluation logic, loader/integration, and test implementation.
-- Strongest model for every [STRONGER MODEL] or [STRONGER MODEL REVIEW] step, especially Phase 1 test-design carryover, all 40 task prompts/schemas/expected values, adversarial-task quality, free-text scoring semantics, and full-loop assertions.
-- Cheapest model only for bounded documentation/Makefile edits after requirements are already exact.
-- Strongest available model for whole-phase review.
-
 Non-negotiable rules:
 - Implement only suite #2 structured and its Phase 2 integration/documentation. Do not redesign core contracts or dashboard.
 - Exactly 40 tasks: 8 per domain and the exact adversarial distribution in the plan.
@@ -112,6 +108,8 @@ Whole-phase gate:
 
 Final response must report: DONE or BLOCKED; final commit hash; task ledger; exact verification evidence; dataset counts/adversarial split; final review verdict; changed paths; remaining Minor findings; and real API calls made (normally none). Then stop. Do not begin Phase 3. Tell the user to /clear and use the Phase 3 controller prompt.
 ```
+
+
 
 ## Phase 3 controller prompt
 
@@ -143,11 +141,6 @@ Per-task controller loop:
 5. Fix and re-review all Critical/Important findings. Resolve cross-task “cannot verify” items yourself. Preserve Minor items for final review.
 6. Update the durable ledger only after clean task approval.
 
-Model routing when selectable:
-- Standard model for typed API client, state/query wiring, controls, and dynamic leaderboard.
-- Strongest model for every [STRONGER MODEL] dashboard-aesthetic step, Recharts thin-slice/label layout, responsive visual review, accessibility review, and final whole-phase review.
-- Use a standard-or-strong reviewer for chart and state-management diffs; cheapest model is acceptable only for truly mechanical isolated CSS/type edits.
-
 Non-negotiable rules:
 - No suite-name conditionals and no structured-specific rendering logic. Everything comes from /suites metadata and /results shapes.
 - Every model row shows row n; every matrix cell shows its own n and CI; no bare estimate.
@@ -164,6 +157,8 @@ Whole-phase gate:
 
 Final response must report: DONE or BLOCKED; final commit hash; ledger summary; test/lint/build/smoke results; viewport review results; whole-phase review verdict; changed paths; and remaining Minor findings. Then stop. Do not begin Phase 4. Tell the user to /clear and use the Phase 4 controller prompt.
 ```
+
+
 
 ## Phase 4 controller prompt
 
@@ -189,12 +184,6 @@ Preflight:
 
 For every task, use the official task-brief, implementer report, review-package, and task-reviewer flow. Every implementer/reviewer prompt must repeat the allowed-path constraint. If any agent changes tests, core, API, store, dashboard, README, Makefile, packages, or another suite, treat that as an Important spec violation and correct it before proceeding. One-off verification scripts must remain uncommitted.
 
-Model routing when selectable:
-- Strongest model for Task 1 dataset/reference/rubric authorship and review, Task 3 judge-prompt/pairwise/variance logic, all [STRONGER MODEL] steps, and final review.
-- Standard model for loading, registration, smoke integration, and additive-diff proof.
-- Cheapest model only for a bounded mechanical edit whose full content is exact in its brief.
-- Reviewers are standard minimum; pairwise judging and dataset ground truth require strongest review.
-
 Non-negotiable rules:
 - Pairwise only: candidate win=1.0, tie=0.5, loss=0.0. No absolute quality scoring.
 - Every judge call independently randomizes candidate A/B position and maps the anonymous verdict back correctly.
@@ -211,6 +200,8 @@ Whole-phase gate:
 
 Final response must report: DONE or BLOCKED; final hash; task ledger; exact verification results; sample-rate check; allowed-path output proving zero core/dashboard changes; final review verdict; remaining Minor findings; and whether any real API calls occurred. There is no remote, so provide PR-description evidence in the response only. Then stop. Do not begin Phase 5. Tell the user to /clear and use the Phase 5 controller prompt.
 ```
+
+
 
 ## Phase 5 controller prompt
 
@@ -236,12 +227,6 @@ Preflight:
 
 For every task, follow the official task-brief/report/review-package/reviewer workflow. Repeat the allowed-path constraint in every implementer and reviewer prompt. Any test/core/API/store/dashboard/README/Makefile/package/other-suite edit is an Important violation. Standalone verification scripts are temporary and uncommitted. Mark ledger completion only after clean spec and quality review.
 
-Model routing when selectable:
-- Strongest model for Task 1 corpus/query/gold-note creation and two-pass label audit, every [STRONGER MODEL] faithfulness/grounding step, Task 6 cross-layer review, Task 7, and the final whole-project review.
-- Standard model for loaders/model parsing, chunking, ranking/math, fake integration, and registration.
-- Cheapest model only for genuinely mechanical isolated code from an exact brief.
-- Retrieval labels and gold relevance may never be approved solely by a cheap model.
-
 Non-negotiable rules:
 - Exactly 200 corpus docs, 40/domain; exactly 15 queries, 3/domain; each gold ID has its own substantive justification note and two-pass audit.
 - Persist model exactly as embedder::chunk_strategy. Never put embedder or strategy in metrics and never silently substitute an embedder.
@@ -259,3 +244,4 @@ Whole-phase/project gate:
 
 Final response must report: DONE or BLOCKED; final main hash and git status; all task ledger entries; exact verification evidence; corpus/query/domain/gold audit; model-encoding evidence; Phase 4 and Phase 5 allowed-path outputs; final reviewer verdict; remaining Minor findings; and any real API calls made. There is no remote, so provide additive/PR evidence in the response, not a PR. Stop after Phase 5; do not invent further work.
 ```
+

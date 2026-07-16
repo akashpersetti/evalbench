@@ -17,7 +17,6 @@
 - Color never carries meaning alone: segment order, percentage text, labels/tooltips, and family dots remain present.
 - Visual style: off-white background, muted green/amber/red/gray, generous row spacing, no gradients, no decorative shadows.
 - Phase gate: live API data for structured renders in both views; all controls work; `npm run lint/build` and backend tests pass; `make api` and `make web` start before `/clear`.
-- `[STRONGER MODEL REVIEW]` marks visual/design judgment. Route those steps to a stronger model or human visual reviewer.
 
 ---
 
@@ -217,7 +216,7 @@ Each segment label renderer returns `null` under `8`; otherwise render a centere
 
 On the page, choose the first key in active suite `display_metrics` order that exists in any returned row's `stacked`; because structured metadata puts `schema_valid` first, it is the Phase 3 primary bar. If none exists, omit the chart and explain that continuous metrics are in the matrix. Render title `<Suite label> reliability` and subtitle naming the display metric; do not hardcode structured.
 
-- [ ] **Step 5: Apply restrained base styling** `[STRONGER MODEL REQUIRED: dashboard aesthetics]`
+- [ ] **Step 5: Apply restrained base styling** 
 
 Use off-white page background near `#f7f5ef`, near-black text, 1px warm-gray separators, muted segment colors, 16–20px row gaps, and a centered max-width content area. Remove decorative shadows, gradients, glass effects, giant hero typography, and card grids. Verify the chart still communicates when viewed in grayscale: segment order, inline percentages, legend, and tooltip labels must remain.
 
@@ -296,7 +295,7 @@ Page order is: compact product header; scope bar; suite title/subtitle; collapsi
 
 Ensure one `<h1>`, suite heading `<h2>`, visible keyboard focus, labels for select/radiogroup, status updates using `aria-live="polite"`, buttons rather than clickable divs, sufficient text/background contrast, and chart-equivalent information in the immediately following table. Respect `prefers-reduced-motion` and disable chart animation there.
 
-- [ ] **Step 3: Visual review against §8** `[STRONGER MODEL REQUIRED: BullshitBench look and restraint]`
+- [ ] **Step 3: Visual review against §8** 
 
 Review at 1440×900, 1024×768, and 390×844 with real structured response data. Check off-white canvas, restrained muted palette, generous row spacing, no gradients/decorative shadows, tabs/readout/filter hierarchy, readable model labels, sample size prominence, thin-slice behavior, and data-first density. Have a stronger model/human make only CSS/layout refinements; do not change API or add chart types.
 
