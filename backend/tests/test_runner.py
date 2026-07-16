@@ -4,6 +4,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,7 @@ from evalbench.config import (
     provider_for_model,
     split_pipeline_model,
 )
-from evalbench.models import RunConfig, SuiteResult
+from evalbench.models import MetricRecord, RunConfig, SuiteResult
 from evalbench.store import (
     create_engine,
     create_session_factory,
@@ -566,6 +567,89 @@ def test_score_free_text_rejects_malformed_score(content: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("values", "mean", "ci_low", "ci_high"),
+    [
+        ([1.0, 1.0, 1.0, 1.0], 1.0, 0.5100999795960008, 1.0),
+        ([0.0, 0.0, 0.0, 0.0], 0.0, 0.0, 0.48990002040399916),
+        ([1.0, 0.0, 1.0, 0.0], 0.5, 0.15003570882017148, 0.8499642911798285),
+        ([1.0, 0.5], 0.75, 0.19786250921045673, 0.9733234672343529),
+    ],
+)
+def test_wilson_interval_matches_hand_computed_values(
+    values: list[float], mean: float, ci_low: float, ci_high: float
+) -> None:
+    estimate = runner_module.wilson_interval(values)
+
+    assert estimate.n == len(values)
+    assert estimate.mean == pytest.approx(mean)
+    assert estimate.ci_low == pytest.approx(ci_low)
+    assert estimate.ci_high == pytest.approx(ci_high)
+
+
+def test_wilson_interval_returns_empty_estimate_without_observations() -> None:
+    estimate = runner_module.wilson_interval([])
+
+    assert estimate.mean is None
+    assert estimate.n == 0
+    assert estimate.ci_low is None
+    assert estimate.ci_high is None
+
+
+@pytest.mark.parametrize(
+    ("values", "mean", "ci_low", "ci_high"),
+    [
+        ([7.5], 7.5, 7.5, 7.5),
+        ([0.0, 2.0], 1.0, -0.96, 2.96),
+    ],
+)
+def test_normal_mean_interval_matches_hand_computed_values(
+    values: list[float], mean: float, ci_low: float, ci_high: float
+) -> None:
+    estimate = runner_module.normal_mean_interval(values)
+
+    assert estimate.n == len(values)
+    assert estimate.mean == pytest.approx(mean)
+    assert estimate.ci_low == pytest.approx(ci_low)
+    assert estimate.ci_high == pytest.approx(ci_high)
+
+
+def test_normal_mean_interval_returns_empty_estimate_without_observations() -> None:
+    estimate = runner_module.normal_mean_interval([])
+
+    assert estimate.mean is None
+    assert estimate.n == 0
+    assert estimate.ci_low is None
+    assert estimate.ci_high is None
+
+
+@pytest.mark.parametrize(
+    ("values", "mean", "ci_low", "ci_high"),
+    [
+        ([7.5], 7.5, 7.5, 7.5),
+        ([float(value) for value in range(1, 21)], 19.0, 18.0, 20.0),
+    ],
+)
+def test_percentile_interval_matches_nearest_rank_and_order_statistic_ci(
+    values: list[float], mean: float, ci_low: float, ci_high: float
+) -> None:
+    estimate = runner_module.percentile_interval(values, 0.95)
+
+    assert estimate.n == len(values)
+    assert estimate.mean == pytest.approx(mean)
+    assert estimate.ci_low == pytest.approx(ci_low)
+    assert estimate.ci_high == pytest.approx(ci_high)
+
+
+def test_percentile_interval_returns_empty_estimate_without_observations() -> None:
+    estimate = runner_module.percentile_interval([], 0.95)
+
+    assert estimate.mean is None
+    assert estimate.n == 0
+    assert estimate.ci_low is None
+    assert estimate.ci_high is None
+
+
 class FakeSuite(Suite):
     name = "fake"
     metric_keys = ["score", "output_length"]
@@ -629,6 +713,303 @@ class FakeSuite(Suite):
             "score": float(task.payload["score"]),
             "output_length": float(len(raw_output)),
         }
+
+
+class AggregationSuite(FakeSuite):
+    name = "aggregation"
+    metric_keys = [
+        "quality_score",
+        "judge_variance",
+        "category_score",
+        "missing_metric",
+    ]
+    display_metrics = [
+        {
+            "key": "quality_score",
+            "label": "Quality",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+        {
+            "key": "judge_variance",
+            "label": "Judge variance",
+            "format": "number",
+            "higher_is_better": False,
+        },
+        {
+            "key": "category_score",
+            "label": "Category",
+            "format": "number",
+            "higher_is_better": True,
+        },
+        {
+            "key": "missing_metric",
+            "label": "Missing",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+    ]
+
+
+class ContinuousAggregationSuite(FakeSuite):
+    name = "continuous"
+    metric_keys = ["continuous_score"]
+    display_metrics = [
+        {
+            "key": "continuous_score",
+            "label": "Continuous",
+            "format": "number",
+            "higher_is_better": True,
+        }
+    ]
+
+
+def make_metric_record(
+    *,
+    record_id: str,
+    suite: str = "aggregation",
+    domain: str = "software",
+    model: str = "shared-model",
+    provider: str = "synthetic",
+    model_family: str = "Family A",
+    latency_ms: float,
+    cost_usd: float,
+    refused: bool = False,
+    metrics: dict[str, float],
+) -> MetricRecord:
+    return MetricRecord(
+        id=record_id,
+        run_id="aggregate-run",
+        suite=suite,
+        domain=domain,
+        model=model,
+        provider=provider,
+        model_family=model_family,
+        task_id=f"task-{record_id}",
+        latency_ms=latency_ms,
+        prompt_tokens=1,
+        completion_tokens=1,
+        cost_usd=cost_usd,
+        error=None,
+        refused=refused,
+        metrics=metrics,
+        created_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+    )
+
+
+def aggregation_records() -> list[MetricRecord]:
+    return [
+        make_metric_record(
+            record_id="a-clear",
+            latency_ms=10.0,
+            cost_usd=2.0,
+            metrics={
+                "quality_score": 1.0,
+                "judge_variance": 2.0,
+                "category_score": 1.0,
+                "undeclared": 99.0,
+            },
+        ),
+        make_metric_record(
+            record_id="a-partial-zero-cost",
+            latency_ms=20.0,
+            cost_usd=0.0,
+            metrics={"quality_score": 0.5, "category_score": 0.5},
+        ),
+        make_metric_record(
+            record_id="a-failed",
+            latency_ms=30.0,
+            cost_usd=1.0,
+            metrics={
+                "quality_score": 0.0,
+                "judge_variance": 4.0,
+                "category_score": 0.0,
+            },
+        ),
+        make_metric_record(
+            record_id="a-refused",
+            latency_ms=40.0,
+            cost_usd=4.0,
+            refused=True,
+            metrics={"quality_score": 1.0},
+        ),
+        make_metric_record(
+            record_id="b-clear-1",
+            model_family="Family B",
+            latency_ms=5.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0, "category_score": 2.0},
+        ),
+        make_metric_record(
+            record_id="b-clear-2",
+            model_family="Family B",
+            latency_ms=15.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0, "category_score": 1.0},
+        ),
+        make_metric_record(
+            record_id="wrong-domain",
+            domain="finance",
+            model="ignored-domain-model",
+            model_family="Ignored",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0},
+        ),
+        make_metric_record(
+            record_id="wrong-suite",
+            suite="other",
+            model="ignored-suite-model",
+            model_family="Ignored",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"quality_score": 1.0},
+        ),
+    ]
+
+
+def test_aggregate_records_builds_grouped_matrix_derived_and_stacked_shapes() -> None:
+    response = runner_module.aggregate_records(
+        suite=AggregationSuite(),
+        records=aggregation_records(),
+        domain="software",
+        exclude_refusals=False,
+    )
+
+    assert response.suite == "aggregation"
+    assert response.domain == "software"
+    assert response.exclude_refusals is False
+    assert [(row.model, row.provider, row.model_family) for row in response.rows] == [
+        ("shared-model", "synthetic", "Family B"),
+        ("shared-model", "synthetic", "Family A"),
+    ]
+
+    family_b, family_a = response.rows
+    assert family_b.n == 2
+    assert family_a.n == 4
+    assert list(family_a.metrics) == AggregationSuite.metric_keys
+    assert "undeclared" not in family_a.metrics
+
+    quality = family_a.metrics["quality_score"]
+    assert quality.mean == pytest.approx(0.625)
+    assert quality.n == 4
+    assert quality.ci_low == pytest.approx(0.21942204237515112)
+    assert quality.ci_high == pytest.approx(0.9081029525238491)
+
+    variance = family_a.metrics["judge_variance"]
+    assert variance.mean == pytest.approx(3.0)
+    assert variance.n == 2
+    assert variance.ci_low == pytest.approx(1.04)
+    assert variance.ci_high == pytest.approx(4.96)
+
+    missing = family_a.metrics["missing_metric"]
+    assert (missing.mean, missing.n, missing.ci_low, missing.ci_high) == (
+        None,
+        0,
+        None,
+        None,
+    )
+
+    p95 = family_a.derived["p95_latency_ms"]
+    assert p95.mean == pytest.approx(40.0)
+    assert p95.n == 4
+    assert p95.ci_low == pytest.approx(40.0)
+    assert p95.ci_high == pytest.approx(40.0)
+
+    cost_adjusted = family_a.derived["cost_adjusted_quality"]
+    assert cost_adjusted.mean == pytest.approx(0.25)
+    assert cost_adjusted.n == 3
+    assert cost_adjusted.ci_low == pytest.approx(-0.03290163190291667)
+    assert cost_adjusted.ci_high == pytest.approx(0.5329016319029167)
+
+    for metric_key in ("quality_score", "category_score"):
+        stacked = family_a.stacked[metric_key]
+        assert stacked.n == 4
+        assert [segment.key for segment in stacked.segments] == [
+            "clear",
+            "partial",
+            "failed",
+            "refused",
+        ]
+        assert [segment.label for segment in stacked.segments] == [
+            "Clear",
+            "Partial",
+            "Failed",
+            "Refused",
+        ]
+        assert [segment.count for segment in stacked.segments] == [1, 1, 1, 1]
+        assert [segment.percentage for segment in stacked.segments] == pytest.approx(
+            [25.0, 25.0, 25.0, 25.0]
+        )
+    assert "judge_variance" not in family_a.stacked
+    assert "missing_metric" not in family_a.stacked
+    assert "category_score" not in family_b.stacked
+
+
+def test_aggregate_records_excludes_refusals_with_metric_specific_sample_sizes() -> None:
+    response = runner_module.aggregate_records(
+        suite=AggregationSuite(),
+        records=aggregation_records(),
+        domain="software",
+        exclude_refusals=True,
+    )
+
+    family_a = next(
+        row for row in response.rows if row.model_family == "Family A"
+    )
+    assert family_a.n == 3
+    assert family_a.metrics["quality_score"].n == 3
+    assert family_a.metrics["judge_variance"].n == 2
+    assert family_a.metrics["missing_metric"].n == 0
+    assert family_a.derived["p95_latency_ms"].n == 3
+    assert family_a.derived["p95_latency_ms"].mean == pytest.approx(30.0)
+    assert family_a.derived["p95_latency_ms"].ci_low == pytest.approx(30.0)
+    assert family_a.derived["p95_latency_ms"].ci_high == pytest.approx(30.0)
+    assert family_a.derived["cost_adjusted_quality"].n == 2
+    assert family_a.derived["cost_adjusted_quality"].mean == pytest.approx(0.25)
+    assert family_a.derived["cost_adjusted_quality"].ci_low == pytest.approx(-0.24)
+    assert family_a.derived["cost_adjusted_quality"].ci_high == pytest.approx(0.74)
+
+    stacked = family_a.stacked["quality_score"]
+    assert stacked.n == 3
+    assert [segment.count for segment in stacked.segments] == [1, 1, 1, 0]
+    assert [segment.percentage for segment in stacked.segments] == pytest.approx(
+        [100.0 / 3.0, 100.0 / 3.0, 100.0 / 3.0, 0.0]
+    )
+
+
+def test_aggregate_records_sorts_by_model_when_no_stacked_metric_exists() -> None:
+    records = [
+        make_metric_record(
+            record_id="zeta",
+            suite="continuous",
+            model="zeta",
+            model_family="Family Z",
+            latency_ms=2.0,
+            cost_usd=1.0,
+            metrics={"continuous_score": 2.0},
+        ),
+        make_metric_record(
+            record_id="alpha",
+            suite="continuous",
+            model="alpha",
+            model_family="Family A",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={"continuous_score": 3.0},
+        ),
+    ]
+
+    response = runner_module.aggregate_records(
+        suite=ContinuousAggregationSuite(),
+        records=records,
+        domain="overall",
+        exclude_refusals=False,
+    )
+
+    assert [row.model for row in response.rows] == ["alpha", "zeta"]
+    assert all(row.stacked == {} for row in response.rows)
+    assert all("cost_adjusted_quality" not in row.derived for row in response.rows)
 
 
 class DetectorFailingFakeSuite(FakeSuite):

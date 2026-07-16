@@ -5,6 +5,8 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
+import statistics
 import time
 from typing import Any
 import uuid
@@ -20,7 +22,16 @@ from evalbench.config import (
     split_pipeline_model,
 )
 from evalbench.judge import Judge
-from evalbench.models import MetricRecord, RunConfig, SuiteResult
+from evalbench.models import (
+    AggregatedModelRow,
+    Estimate,
+    MetricRecord,
+    ResultsResponse,
+    RunConfig,
+    Segment,
+    StackedBreakdown,
+    SuiteResult,
+)
 from evalbench.registry import get_suite
 from evalbench.store import (
     SessionFactory,
@@ -39,6 +50,212 @@ class CallResult:
     completion_tokens: int
     cost_usd: float
     latency_ms: float
+
+
+def _empty_estimate() -> Estimate:
+    return Estimate(mean=None, n=0, ci_low=None, ci_high=None)
+
+
+def wilson_interval(values: Sequence[float]) -> Estimate:
+    """Return the 95% Wilson interval for binary or fractional successes."""
+    n = len(values)
+    if n == 0:
+        return _empty_estimate()
+
+    z = 1.96
+    mean = sum(values) / n
+    denominator = 1 + z**2 / n
+    center = (mean + z**2 / (2 * n)) / denominator
+    half = (
+        z
+        * math.sqrt((mean * (1 - mean) + z**2 / (4 * n)) / n)
+        / denominator
+    )
+    return Estimate(
+        mean=mean,
+        n=n,
+        ci_low=max(0.0, center - half),
+        ci_high=min(1.0, center + half),
+    )
+
+
+def normal_mean_interval(values: Sequence[float]) -> Estimate:
+    """Return a 95% normal interval around the sample mean."""
+    n = len(values)
+    if n == 0:
+        return _empty_estimate()
+
+    mean = statistics.fmean(values)
+    if n == 1:
+        return Estimate(mean=mean, n=n, ci_low=mean, ci_high=mean)
+
+    standard_error = statistics.stdev(values) / math.sqrt(n)
+    half = 1.96 * standard_error
+    return Estimate(mean=mean, n=n, ci_low=mean - half, ci_high=mean + half)
+
+
+def _binomial_quantile(n: int, probability: float, quantile: float) -> int:
+    cumulative = 0.0
+    for successes in range(n + 1):
+        cumulative += (
+            math.comb(n, successes)
+            * probability**successes
+            * (1 - probability) ** (n - successes)
+        )
+        if cumulative >= quantile:
+            return successes
+    return n
+
+
+def percentile_interval(values: Sequence[float], q: float) -> Estimate:
+    """Return a nearest-rank percentile with a binomial order-statistic CI."""
+    n = len(values)
+    if n == 0:
+        return _empty_estimate()
+
+    ordered = sorted(values)
+    estimate_index = min(n - 1, max(0, math.ceil(q * n) - 1))
+    estimate = ordered[estimate_index]
+    if n == 1:
+        return Estimate(mean=estimate, n=n, ci_low=estimate, ci_high=estimate)
+
+    lower_index = min(n - 1, max(0, _binomial_quantile(n, q, 0.025)))
+    upper_index = min(n - 1, max(0, _binomial_quantile(n, q, 0.975)))
+    return Estimate(
+        mean=estimate,
+        n=n,
+        ci_low=ordered[lower_index],
+        ci_high=ordered[upper_index],
+    )
+
+
+def _stacked_breakdown(
+    records: Sequence[MetricRecord], metric_key: str
+) -> StackedBreakdown | None:
+    categorical_values = [
+        record.metrics[metric_key]
+        for record in records
+        if not record.refused and metric_key in record.metrics
+    ]
+    if not categorical_values or not all(
+        value in {0.0, 0.5, 1.0} for value in categorical_values
+    ):
+        return None
+
+    counts = {
+        "clear": categorical_values.count(1.0),
+        "partial": categorical_values.count(0.5),
+        "failed": categorical_values.count(0.0),
+        "refused": sum(record.refused for record in records),
+    }
+    n = sum(counts.values())
+    labels = {
+        "clear": "Clear",
+        "partial": "Partial",
+        "failed": "Failed",
+        "refused": "Refused",
+    }
+    segments = [
+        Segment(
+            key=key,
+            label=labels[key],
+            count=counts[key],
+            percentage=counts[key] / n * 100,
+        )
+        for key in ("clear", "partial", "failed", "refused")
+    ]
+    return StackedBreakdown(metric_key=metric_key, n=n, segments=segments)
+
+
+def aggregate_records(
+    *,
+    suite: Suite,
+    records: Sequence[MetricRecord],
+    domain: str,
+    exclude_refusals: bool,
+) -> ResultsResponse:
+    """Aggregate filtered records into matrix and stacked dashboard shapes."""
+    selected = [
+        record
+        for record in records
+        if record.suite == suite.name
+        and (domain == "overall" or record.domain == domain)
+        and not (exclude_refusals and record.refused)
+    ]
+    grouped: dict[tuple[str, str, str], list[MetricRecord]] = {}
+    for record in selected:
+        key = (record.model, record.provider, record.model_family)
+        grouped.setdefault(key, []).append(record)
+
+    proportion_metrics = {
+        metadata.get("key")
+        for metadata in suite.display_metrics
+        if metadata.get("format") == "percent"
+    }
+    rows: list[AggregatedModelRow] = []
+    for (model, provider, model_family), model_records in grouped.items():
+        metrics: dict[str, Estimate] = {}
+        stacked: dict[str, StackedBreakdown] = {}
+        for metric_key in suite.metric_keys:
+            values = [
+                record.metrics[metric_key]
+                for record in model_records
+                if metric_key in record.metrics
+            ]
+            interval = (
+                wilson_interval(values)
+                if metric_key in proportion_metrics
+                else normal_mean_interval(values)
+            )
+            metrics[metric_key] = interval
+
+            breakdown = _stacked_breakdown(model_records, metric_key)
+            if breakdown is not None:
+                stacked[metric_key] = breakdown
+
+        derived = {
+            "p95_latency_ms": percentile_interval(
+                [record.latency_ms for record in model_records], 0.95
+            )
+        }
+        if "quality_score" in suite.metric_keys:
+            derived["cost_adjusted_quality"] = normal_mean_interval(
+                [
+                    record.metrics["quality_score"] / record.cost_usd
+                    for record in model_records
+                    if record.cost_usd > 0
+                    and "quality_score" in record.metrics
+                ]
+            )
+
+        rows.append(
+            AggregatedModelRow(
+                model=model,
+                provider=provider,
+                model_family=model_family,
+                n=len(model_records),
+                metrics=metrics,
+                derived=derived,
+                stacked=stacked,
+            )
+        )
+
+    if any(row.stacked for row in rows):
+        def clear_percentage(row: AggregatedModelRow) -> float:
+            if not row.stacked:
+                return -1.0
+            return next(iter(row.stacked.values())).segments[0].percentage
+
+        rows.sort(key=lambda row: (-clear_percentage(row), row.model))
+    else:
+        rows.sort(key=lambda row: row.model)
+
+    return ResultsResponse(
+        suite=suite.name,
+        domain=domain,
+        exclude_refusals=exclude_refusals,
+        rows=rows,
+    )
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
