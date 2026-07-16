@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from inspect import signature
 from types import SimpleNamespace
@@ -21,6 +22,11 @@ from evalbench.models import (
     SuiteResult,
 )
 from evalbench.suites.base import Suite, Task
+from evalbench.suites.structured import (
+    extract_json,
+    model_from_schema,
+    validate_output,
+)
 
 
 METRIC_RECORD_FIELDS = (
@@ -317,6 +323,136 @@ def test_task_uses_independent_payload_defaults() -> None:
 
     assert second.payload == {}
     assert first.requires_generation is True
+
+
+STRUCTURED_SCHEMA = {
+    "title": "StructuredOutput",
+    "type": "object",
+    "properties": {
+        "release": {
+            "type": "object",
+            "properties": {
+                "version": {"type": "integer"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["version", "tags"],
+            "additionalProperties": False,
+        },
+        "status": {"type": "string", "enum": ["draft", "published"]},
+        "owner": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["release", "status"],
+    "additionalProperties": False,
+}
+
+
+def test_structured_schema_converts_nested_lists_enums_and_nullable_fields() -> None:
+    model = model_from_schema("StructuredOutput", STRUCTURED_SCHEMA)
+
+    value = model.model_validate(
+        {
+            "release": {"version": 2, "tags": ["stable", "api"]},
+            "status": "published",
+            "owner": None,
+        }
+    )
+
+    assert value.release.version == 2
+    assert value.release.tags == ["stable", "api"]
+    assert value.status == "published"
+    assert value.owner is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_message"),
+    [
+        (
+            {
+                "release": {"version": "2", "tags": ["stable"]},
+                "status": "draft",
+            },
+            "int_type",
+        ),
+        (
+            {"release": {"version": 2, "tags": ["stable"]}},
+            "status",
+        ),
+        (
+            {
+                "release": {"version": 2, "tags": ["stable"]},
+                "status": "draft",
+                "unexpected": True,
+            },
+            "extra_forbidden",
+        ),
+    ],
+)
+def test_structured_schema_rejects_invalid_values(
+    value: dict[str, Any], expected_message: str
+) -> None:
+    parsed, valid, error = validate_output(json.dumps(value), STRUCTURED_SCHEMA)
+
+    assert parsed == value
+    assert valid is False
+    assert error is not None
+    assert expected_message in error
+
+
+def test_structured_schema_preserves_an_absent_optional_nullable_field() -> None:
+    raw_output = '{"release":{"version":2,"tags":["stable"]},"status":"draft"}'
+
+    parsed, valid, error = validate_output(raw_output, STRUCTURED_SCHEMA)
+
+    assert parsed == {
+        "release": {"version": 2, "tags": ["stable"]},
+        "status": "draft",
+    }
+    assert valid is True
+    assert error is None
+
+
+def test_structured_schema_rejects_unsupported_constructs_with_the_schema_path() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "minLength": 1}},
+        "required": ["name"],
+    }
+
+    with pytest.raises(ValueError, match=r"\$\.properties\.name"):
+        model_from_schema("Unsupported", schema)
+
+
+@pytest.mark.parametrize(
+    ("raw_output", "expected"),
+    [
+        ('{"answer": 42}', {"answer": 42}),
+        ('```json\n{"answer": 42}\n```', {"answer": 42}),
+        (
+            'Result follows: {"message": "a brace: { and a quote: \\""} Thanks.',
+            {"message": 'a brace: { and a quote: "'},
+        ),
+    ],
+)
+def test_structured_json_extracts_one_value_from_supported_output_forms(
+    raw_output: str, expected: Any
+) -> None:
+    assert extract_json(raw_output) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw_output", "expected_message"),
+    [
+        ('{"answer":', "invalid JSON"),
+        ('{"answer": 1}\n[2]', "ambiguous"),
+        ('{"answer": 1}\n42', "ambiguous"),
+        ('{"answer": 1}\nnot JSON { prose', "ambiguous"),
+    ],
+)
+def test_structured_json_rejects_malformed_or_ambiguous_output(
+    raw_output: str, expected_message: str
+) -> None:
+    with pytest.raises(ValueError, match=expected_message):
+        extract_json(raw_output)
 
 
 class MissingEvaluateSuite(Suite):
