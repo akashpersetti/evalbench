@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
@@ -21,6 +22,16 @@ _MISSING = object()
 _FREE_TEXT_RUBRIC = (
     "Semantic equivalence and factual completeness; ignore wording differences."
 )
+_STRUCTURED_DOMAINS = ("software", "finance", "legal", "medical", "physics")
+_STRUCTURED_ROW_KEYS = {
+    "id",
+    "domain",
+    "prompt",
+    "schema",
+    "expected",
+    "free_text_fields",
+    "adversarial",
+}
 
 
 class StructuredSuite(Suite):
@@ -67,9 +78,91 @@ class StructuredSuite(Suite):
         },
     ]
 
+    def __init__(self, data_root: Path | None = None) -> None:
+        self.data_root = data_root or (
+            Path(__file__).resolve().parents[2] / "data" / "structured"
+        )
+
     def load_tasks(self, domain: str) -> list[Task]:
-        """Return no tasks until the structured dataset is installed."""
-        return []
+        """Load deterministic structured tasks for one domain or the full suite."""
+        if domain != "overall" and domain not in _STRUCTURED_DOMAINS:
+            raise ValueError(f"unknown structured domain {domain!r}")
+
+        domains = _STRUCTURED_DOMAINS if domain == "overall" else (domain,)
+        tasks = [task for selected in domains for task in self._load_domain(selected)]
+        return sorted(tasks, key=lambda task: (task.domain, task.id))
+
+    def _load_domain(self, domain: str) -> list[Task]:
+        path = self.data_root / f"{domain}.jsonl"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            raise ValueError(f"unable to read {path.name}: {error.strerror}") from error
+
+        tasks: list[Task] = []
+        for line_number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"{path.name}:{line_number}: invalid JSON: {error.msg}"
+                ) from error
+            try:
+                tasks.append(self._task_from_row(row, domain))
+            except (TypeError, ValueError, ValidationError) as error:
+                raise ValueError(
+                    f"{path.name}:{line_number}: invalid structured task: {error}"
+                ) from error
+        return tasks
+
+    @staticmethod
+    def _task_from_row(row: Any, domain: str) -> Task:
+        if not isinstance(row, dict):
+            raise ValueError("row must be an object")
+        if set(row) != _STRUCTURED_ROW_KEYS:
+            raise ValueError("row must contain exactly the structured task fields")
+        if not isinstance(row["id"], str) or not row["id"].startswith(f"{domain}-"):
+            raise ValueError("task id does not match the file domain")
+        if row["domain"] != domain:
+            raise ValueError("task domain does not match the file domain")
+        if not isinstance(row["prompt"], str) or not row["prompt"].strip():
+            raise ValueError("prompt must be a non-empty string")
+        if not isinstance(row["schema"], dict):
+            raise ValueError("schema must be an object")
+        model = model_from_schema(
+            f"Structured_{row['id'].replace('-', '_')}", row["schema"]
+        )
+        expected = row["expected"]
+        if model.model_validate(expected).model_dump() != expected:
+            raise ValueError("expected value did not preserve its exact shape")
+        free_text_fields = row["free_text_fields"]
+        if (
+            not isinstance(free_text_fields, list)
+            or not all(isinstance(pointer, str) for pointer in free_text_fields)
+            or len(free_text_fields) > 2
+            or len(free_text_fields) != len(set(free_text_fields))
+        ):
+            raise ValueError("free_text_fields must contain at most two unique pointers")
+        expected_pointers = {
+            pointer for pointer, _ in iter_expected_leaves(expected)
+        }
+        if not set(free_text_fields).issubset(expected_pointers):
+            raise ValueError("free_text_fields contains an unresolved expected pointer")
+        if not isinstance(row["adversarial"], bool):
+            raise ValueError("adversarial must be a boolean")
+        return Task(
+            id=row["id"],
+            domain=domain,
+            prompt=row["prompt"],
+            payload={
+                "schema": row["schema"],
+                "expected": expected,
+                "free_text_fields": free_text_fields,
+                "adversarial": row["adversarial"],
+            },
+        )
 
     def build_prompt(self, task: Task) -> list[dict]:
         schema = task.payload["schema"]

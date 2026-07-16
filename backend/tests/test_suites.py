@@ -1,6 +1,8 @@
 import json
+import re
 from datetime import datetime, timezone
 from inspect import signature
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
 
@@ -349,6 +351,178 @@ STRUCTURED_SCHEMA = {
     "required": ["release", "status"],
     "additionalProperties": False,
 }
+
+STRUCTURED_DATASET_DOMAINS = (
+    "software",
+    "finance",
+    "legal",
+    "medical",
+    "physics",
+)
+STRUCTURED_DATASET_DIR = (
+    Path(__file__).resolve().parents[1] / "data" / "structured"
+)
+
+
+def _structured_dataset_rows() -> list[dict[str, Any]]:
+    rows = []
+    for domain in STRUCTURED_DATASET_DOMAINS:
+        path = STRUCTURED_DATASET_DIR / f"{domain}.jsonl"
+        rows.extend(
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    return rows
+
+
+def test_structured_dataset_has_exact_balanced_files_ids_and_adversarial_split() -> None:
+    expected_files = {
+        f"{domain}.jsonl" for domain in STRUCTURED_DATASET_DOMAINS
+    }
+
+    assert STRUCTURED_DATASET_DIR.is_dir(), (
+        f"missing structured dataset directory: {STRUCTURED_DATASET_DIR}"
+    )
+    assert {
+        path.name for path in STRUCTURED_DATASET_DIR.iterdir() if path.is_file()
+    } == expected_files
+
+    rows = []
+    for domain in STRUCTURED_DATASET_DOMAINS:
+        path = STRUCTURED_DATASET_DIR / f"{domain}.jsonl"
+        lines = [
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(lines) == 8
+        domain_rows = [json.loads(line) for line in lines]
+        assert [row["id"] for row in domain_rows] == [
+            f"{domain}-{index:02d}" for index in range(1, 9)
+        ]
+        assert all(row["domain"] == domain for row in domain_rows)
+        assert {
+            row["id"] for row in domain_rows if row["adversarial"]
+        } == {f"{domain}-{index:02d}" for index in (2, 4, 6, 8)}
+        rows.extend(domain_rows)
+
+    ids = [row["id"] for row in rows]
+    assert len(rows) == 40
+    assert len(ids) == len(set(ids))
+    assert all(re.fullmatch(r"(software|finance|legal|medical|physics)-\d{2}", task_id) for task_id in ids)
+
+
+def test_structured_dataset_rows_have_convertible_schemas_and_valid_expected_values() -> None:
+    for row in _structured_dataset_rows():
+        assert set(row) == {
+            "id",
+            "domain",
+            "prompt",
+            "schema",
+            "expected",
+            "free_text_fields",
+            "adversarial",
+        }
+        assert isinstance(row["prompt"], str) and row["prompt"].strip()
+        assert isinstance(row["adversarial"], bool)
+
+        model = model_from_schema(
+            f"Dataset_{row['id'].replace('-', '_')}", row["schema"]
+        )
+        validated = model.model_validate(row["expected"])
+
+        assert validated.model_dump() == row["expected"]
+
+
+def test_structured_dataset_free_text_pointers_resolve_without_expected_leakage() -> None:
+    for row in _structured_dataset_rows():
+        pointers = row["free_text_fields"]
+        expected_leaf_pointers = {
+            pointer for pointer, _ in iter_expected_leaves(row["expected"])
+        }
+        serialized_expected = {
+            json.dumps(row["expected"]),
+            json.dumps(row["expected"], sort_keys=True),
+            json.dumps(row["expected"], sort_keys=True, separators=(",", ":")),
+        }
+
+        assert isinstance(pointers, list)
+        assert len(pointers) <= 2
+        assert len(pointers) == len(set(pointers))
+        assert set(pointers).issubset(expected_leaf_pointers)
+        assert all(value not in row["prompt"] for value in serialized_expected)
+        assert not re.search(
+            r"(?i)(?:sk-[a-z0-9]|api[_ -]?key|bearer\s+[a-z0-9]|password\s*[:=])",
+            row["prompt"],
+        )
+
+
+def test_structured_dataset_loaders_are_deterministic_and_sorted() -> None:
+    suite = StructuredSuite()
+
+    first_overall = suite.load_tasks("overall")
+    second_overall = suite.load_tasks("overall")
+
+    assert len(first_overall) == 40
+    assert [task.model_dump() for task in first_overall] == [
+        task.model_dump() for task in second_overall
+    ]
+    assert [(task.domain, task.id) for task in first_overall] == sorted(
+        (task.domain, task.id) for task in first_overall
+    )
+    assert all(task.requires_generation is True for task in first_overall)
+    assert all(
+        set(task.payload)
+        == {"schema", "expected", "free_text_fields", "adversarial"}
+        for task in first_overall
+    )
+
+    for domain in STRUCTURED_DATASET_DOMAINS:
+        tasks = suite.load_tasks(domain)
+        assert len(tasks) == 8
+        assert [task.id for task in tasks] == [
+            f"{domain}-{index:02d}" for index in range(1, 9)
+        ]
+        assert all(task.domain == domain for task in tasks)
+
+
+def test_structured_dataset_loader_rejects_unknown_domain_before_file_access(
+    tmp_path: Path,
+) -> None:
+    suite = StructuredSuite()
+    suite.data_root = tmp_path / "does-not-exist"
+
+    with pytest.raises(ValueError, match="unknown structured domain 'astronomy'"):
+        suite.load_tasks("astronomy")
+
+
+def test_structured_dataset_loader_reports_filename_and_line_for_invalid_json(
+    tmp_path: Path,
+) -> None:
+    valid_row = {
+        "id": "software-01",
+        "domain": "software",
+        "prompt": "Return the supplied status as JSON.",
+        "schema": {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+            "additionalProperties": False,
+        },
+        "expected": {"status": "ready"},
+        "free_text_fields": [],
+        "adversarial": False,
+    }
+    path = tmp_path / "software.jsonl"
+    path.write_text(
+        f"\n{json.dumps(valid_row)}\nnot-json\n",
+        encoding="utf-8",
+    )
+    suite = StructuredSuite()
+    suite.data_root = tmp_path
+
+    with pytest.raises(ValueError, match=r"software\.jsonl:3"):
+        suite.load_tasks("software")
 
 
 def test_structured_schema_converts_nested_lists_enums_and_nullable_fields() -> None:
