@@ -95,14 +95,38 @@ def normal_mean_interval(values: Sequence[float]) -> Estimate:
 
 
 def _binomial_quantile(n: int, probability: float, quantile: float) -> int:
-    cumulative = 0.0
-    for successes in range(n + 1):
-        cumulative += (
-            math.comb(n, successes)
-            * probability**successes
-            * (1 - probability) ** (n - successes)
+    if probability <= 0.0:
+        return 0
+    if probability >= 1.0:
+        return n
+
+    mode = min(n, max(0, math.floor((n + 1) * probability)))
+    masses = [0.0] * (n + 1)
+    masses[mode] = 1.0
+
+    failure_odds = (1.0 - probability) / probability
+    for successes in range(mode, 0, -1):
+        masses[successes - 1] = (
+            masses[successes]
+            * successes
+            / (n - successes + 1)
+            * failure_odds
         )
-        if cumulative >= quantile:
+
+    success_odds = probability / (1.0 - probability)
+    for successes in range(mode, n):
+        masses[successes + 1] = (
+            masses[successes]
+            * (n - successes)
+            / (successes + 1)
+            * success_odds
+        )
+
+    target = quantile * math.fsum(masses)
+    cumulative = 0.0
+    for successes, mass in enumerate(masses):
+        cumulative += mass
+        if cumulative >= target:
             return successes
     return n
 

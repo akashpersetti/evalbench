@@ -1,4 +1,5 @@
 import logging
+import math
 import random
 import subprocess
 import sys
@@ -1133,6 +1134,36 @@ def test_aggregate_records_builds_grouped_matrix_derived_and_stacked_shapes() ->
     assert "judge_variance" not in family_a.stacked
     assert "missing_metric" not in family_a.stacked
     assert "category_score" not in family_b.stacked
+
+
+def test_aggregate_records_returns_p95_interval_for_large_history() -> None:
+    records = [
+        make_metric_record(
+            record_id=f"large-history-{value}",
+            suite="continuous",
+            latency_ms=float(value),
+            cost_usd=1.0,
+            metrics={"continuous_score": 2.0},
+        )
+        for value in range(1_030)
+    ]
+
+    response = runner_module.aggregate_records(
+        suite=ContinuousAggregationSuite(),
+        records=records,
+        domain="overall",
+        exclude_refusals=False,
+    )
+
+    estimate = response.rows[0].derived["p95_latency_ms"]
+    assert set(estimate.model_dump()) == {"mean", "n", "ci_low", "ci_high"}
+    assert estimate.n == 1_030
+    assert estimate.mean == 978.0
+    assert estimate.ci_low is not None
+    assert estimate.ci_high is not None
+    assert math.isfinite(estimate.ci_low)
+    assert math.isfinite(estimate.ci_high)
+    assert estimate.ci_low <= estimate.mean <= estimate.ci_high
 
 
 def test_aggregate_records_excludes_refusals_with_metric_specific_sample_sizes() -> None:

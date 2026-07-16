@@ -33,6 +33,8 @@ The `rag` suite is Phase 5 work and is not delivered in Phase 1.
 
 - Python 3.11 or newer
 - [uv](https://docs.astral.sh/uv/)
+- Node.js 20.9 or newer
+- npm (included with Node.js)
 
 ## Environment setup
 
