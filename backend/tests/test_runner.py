@@ -3,20 +3,33 @@ import random
 import subprocess
 import sys
 import textwrap
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import litellm
 import pytest
 
 import evalbench.judge as judge_module
+import evalbench.registry as registry_module
 import evalbench.runner as runner_module
 from evalbench.config import (
+    Settings,
     calculate_cost_usd,
     family_for_model,
     provider_for_model,
     split_pipeline_model,
 )
+from evalbench.models import RunConfig, SuiteResult
+from evalbench.store import (
+    create_engine,
+    create_session_factory,
+    get_run_records,
+    init_db,
+)
+from evalbench.suites.base import Suite, Task
 
 
 @pytest.mark.parametrize(
@@ -551,3 +564,389 @@ def test_score_free_text_rejects_malformed_score(content: str) -> None:
             actual="synthetic actual",
             rubric="synthetic rubric",
         )
+
+
+class FakeSuite(Suite):
+    name = "fake"
+    metric_keys = ["score", "output_length"]
+    display_metrics = [
+        {
+            "key": "score",
+            "label": "Score",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+        {
+            "key": "output_length",
+            "label": "Output length",
+            "format": "number",
+            "higher_is_better": True,
+        },
+    ]
+
+    def __init__(self) -> None:
+        self.loaded_tasks: list[Task] = []
+        self.evaluations: list[tuple[str, str, str]] = []
+        self._lock = threading.Lock()
+
+    def load_tasks(self, domain: str) -> list[Task]:
+        self.loaded_tasks = [
+            Task(
+                id="fake-software-1",
+                domain="software",
+                prompt="secret prompt software 04d5",
+                payload={"score": 0.25},
+            ),
+            Task(
+                id="fake-finance-2",
+                domain="finance",
+                prompt="secret prompt finance e9a1",
+                payload={"score": 0.75},
+                requires_generation=False,
+            ),
+        ]
+        return self.loaded_tasks
+
+    def build_prompt(self, task: Task) -> list[dict]:
+        return [{"role": "user", "content": f"target:{task.id}:{task.prompt}"}]
+
+    def evaluate(
+        self, task: Task, raw_output: str, judge: judge_module.Judge
+    ) -> dict[str, float]:
+        context = task._execution_context
+        assert context is not None
+        assert judge.model == "anthropic/claude-sonnet-4-5"
+        if task.requires_generation:
+            assert context.model in raw_output
+        else:
+            assert raw_output == ""
+        context.complete(
+            [{"role": "user", "content": f"extra:{task.id}:{task.prompt}"}]
+        )
+        with self._lock:
+            self.evaluations.append((task.id, context.model, raw_output))
+        return {
+            "score": float(task.payload["score"]),
+            "output_length": float(len(raw_output)),
+        }
+
+
+class BoundedFakeCompletion:
+    def __init__(self, cap: int = 2) -> None:
+        self.cap = cap
+        self.calls: list[dict[str, Any]] = []
+        self.active = 0
+        self.maximum_active = 0
+        self._lock = threading.Lock()
+        self._first_wave_ready = threading.Event()
+
+    def __call__(self, **kwargs: Any) -> SimpleNamespace:
+        with self._lock:
+            self.calls.append(kwargs)
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            if self.active == self.cap:
+                self._first_wave_ready.set()
+
+        try:
+            assert self._first_wave_ready.wait(timeout=5), (
+                "bounded fake calls did not overlap"
+            )
+            content = kwargs["messages"][0]["content"]
+            if (
+                kwargs["model"] == "openai/gpt-4o"
+                and content.startswith("extra:fake-finance-2")
+            ):
+                raise TimeoutError("synthetic timeout output 524a")
+            if content.startswith("target:fake-software-1"):
+                if kwargs["model"].startswith("anthropic/"):
+                    output = (
+                        "I can't assist with that request. "
+                        f"model={kwargs['model']} output=secret-61ab"
+                    )
+                else:
+                    output = (
+                        f"answer model={kwargs['model']} output=secret-61ab"
+                    )
+                prompt_tokens, completion_tokens = 7, 3
+            else:
+                output = "extra output secret-813f"
+                prompt_tokens, completion_tokens = 5, 2
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=output))],
+                usage=SimpleNamespace(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+            )
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def assert_uuid4(value: str) -> None:
+    parsed = UUID(value)
+    assert parsed.version == 4
+    assert str(parsed) == value
+
+
+async def test_execute_run_records_persists_and_continues_with_bounded_concurrency(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    suite = FakeSuite()
+    completion = BoundedFakeCompletion(cap=2)
+    database_path = (tmp_path / "runner.db").resolve()
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    factory = create_session_factory(engine)
+    await init_db(engine)
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        litellm_timeout_seconds=4.0,
+        max_concurrency=2,
+    )
+    config = RunConfig(
+        suite="fake",
+        domain="overall",
+        models=["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
+    )
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(registry_module, "SUITES", {})
+            registry_module.register_suite(suite)
+            scoped.setattr(runner_module, "get_settings", lambda: settings)
+            result = await runner_module.execute_run(
+                config,
+                session_factory=factory,
+                completion_fn=completion,
+                embedding_fn=lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("unexpected embedding call")
+                ),
+            )
+        persisted = await get_run_records(factory, result.run_id)
+    finally:
+        await engine.dispose()
+
+    assert_uuid4(result.run_id)
+    assert len(result.records) == 4
+    assert [
+        (record.task_id, record.model) for record in result.records
+    ] == [
+        ("fake-software-1", "openai/gpt-4o"),
+        ("fake-software-1", "anthropic/claude-sonnet-4-5"),
+        ("fake-finance-2", "openai/gpt-4o"),
+        ("fake-finance-2", "anthropic/claude-sonnet-4-5"),
+    ]
+    assert all(record.run_id == result.run_id for record in result.records)
+    assert len({record.id for record in result.records}) == 4
+    for record in result.records:
+        assert_uuid4(record.id)
+
+    software_openai, software_anthropic, finance_openai, finance_anthropic = (
+        result.records
+    )
+    assert (software_openai.provider, software_openai.model_family) == (
+        "openai",
+        "OpenAI",
+    )
+    assert (software_anthropic.provider, software_anthropic.model_family) == (
+        "anthropic",
+        "Anthropic",
+    )
+    assert [record.domain for record in result.records] == [
+        "software",
+        "software",
+        "finance",
+        "finance",
+    ]
+    assert software_openai.metrics == {
+        "score": 0.25,
+        "output_length": float(
+            len("answer model=openai/gpt-4o output=secret-61ab")
+        ),
+    }
+    assert software_anthropic.metrics == {
+        "score": 0.25,
+        "output_length": float(
+            len(
+                "I can't assist with that request. "
+                "model=anthropic/claude-sonnet-4-5 output=secret-61ab"
+            )
+        ),
+    }
+    assert finance_anthropic.metrics == {"score": 0.75, "output_length": 0.0}
+    assert [record.refused for record in result.records] == [False, True, False, False]
+    assert software_openai.prompt_tokens == 12
+    assert software_openai.completion_tokens == 5
+    assert software_openai.cost_usd == pytest.approx(
+        calculate_cost_usd("openai/gpt-4o", 12, 5)
+    )
+    assert software_anthropic.prompt_tokens == 12
+    assert software_anthropic.completion_tokens == 5
+    assert software_anthropic.cost_usd == pytest.approx(
+        calculate_cost_usd("anthropic/claude-sonnet-4-5", 12, 5)
+    )
+    assert finance_anthropic.prompt_tokens == 5
+    assert finance_anthropic.completion_tokens == 2
+    assert finance_anthropic.cost_usd == pytest.approx(
+        calculate_cost_usd("anthropic/claude-sonnet-4-5", 5, 2)
+    )
+    assert finance_openai.error == "TimeoutError"
+    assert finance_openai.prompt_tokens == 0
+    assert finance_openai.completion_tokens == 0
+    assert finance_openai.cost_usd == 0.0
+    assert finance_openai.metrics == {"score": 0.0, "output_length": 0.0}
+    assert all(record.created_at.tzinfo is not None for record in result.records)
+    assert all(task._execution_context is None for task in suite.loaded_tasks)
+    assert completion.maximum_active == 2
+    assert completion.maximum_active <= settings.max_concurrency
+    assert not any(
+        call["messages"][0]["content"].startswith("target:fake-finance-2")
+        for call in completion.calls
+    )
+    assert {(item.task_id, item.model) for item in persisted} == {
+        (item.task_id, item.model) for item in result.records
+    }
+    assert {item.id: item.model_dump() for item in persisted} == {
+        item.id: item.model_dump() for item in result.records
+    }
+
+    progress = capsys.readouterr().out
+    assert f"run_id={result.run_id}" in progress
+    assert "progress=4/4" in progress
+    assert "error=TimeoutError" in progress
+    for secret in (
+        "secret prompt",
+        "secret-61ab",
+        "secret-813f",
+        "synthetic timeout output 524a",
+    ):
+        assert secret not in progress
+
+
+def test_successful_execution_preserves_omitted_declared_metrics() -> None:
+    class SparseMetricSuite(Suite):
+        name = "sparse"
+        metric_keys = ["score", "sampled_only"]
+        display_metrics = []
+
+        def load_tasks(self, domain: str) -> list[Task]:
+            return []
+
+        def build_prompt(self, task: Task) -> list[dict]:
+            return []
+
+        def evaluate(
+            self, task: Task, raw_output: str, judge: judge_module.Judge
+        ) -> dict[str, float]:
+            return {"score": 1.0}
+
+    task = Task(
+        id="sparse-1",
+        domain="physics",
+        prompt="unused synthetic prompt",
+        requires_generation=False,
+    )
+
+    record = runner_module._execute_one_sync(
+        suite=SparseMetricSuite(),
+        task=task,
+        model="openai/gpt-4o",
+        run_id="run-sparse",
+        judge_model="anthropic/claude-sonnet-4-5",
+        completion_fn=FakeCompletion(),
+        embedding_fn=FakeEmbedding(),
+        timeout_seconds=1.0,
+    )
+
+    assert record.error is None
+    assert record.metrics == {"score": 1.0}
+    assert task._execution_context is None
+
+
+def test_main_parses_cli_initializes_database_and_returns_zero(
+    monkeypatch, capsys
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            captured["disposed"] = True
+
+    async def fake_init_db(engine: object) -> None:
+        captured["initialized"] = engine
+
+    async def fake_execute_run(config: RunConfig, **kwargs: Any) -> SuiteResult:
+        captured["config"] = config
+        captured["session_factory"] = kwargs["session_factory"]
+        return SuiteResult(run_id="run-cli", records=[])
+
+    engine = FakeEngine()
+    factory = object()
+    monkeypatch.setattr(runner_module, "create_engine", lambda: engine)
+    monkeypatch.setattr(runner_module, "create_session_factory", lambda value: factory)
+    monkeypatch.setattr(runner_module, "init_db", fake_init_db)
+    monkeypatch.setattr(runner_module, "execute_run", fake_execute_run)
+
+    exit_code = runner_module.main(
+        [
+            "--suite",
+            "fake",
+            "--domain",
+            "software",
+            "--models",
+            "openai/gpt-4o, anthropic/claude-sonnet-4-5",
+            "--judge-model",
+            "openai/gpt-4o",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["initialized"] is engine
+    assert captured["session_factory"] is factory
+    assert captured["disposed"] is True
+    assert captured["config"] == RunConfig(
+        suite="fake",
+        domain="software",
+        models=["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
+        judge_model="openai/gpt-4o",
+    )
+    assert "run_id=run-cli" in capsys.readouterr().out
+
+
+def test_main_returns_nonzero_for_invalid_config(monkeypatch) -> None:
+    called = False
+
+    async def fake_execute_run(*args: Any, **kwargs: Any) -> SuiteResult:
+        nonlocal called
+        called = True
+        return SuiteResult(run_id="unexpected", records=[])
+
+    monkeypatch.setattr(runner_module, "execute_run", fake_execute_run)
+
+    exit_code = runner_module.main(
+        ["--suite", "fake", "--domain", "overall", "--models", ","]
+    )
+
+    assert exit_code != 0
+    assert called is False
+
+
+def test_main_returns_nonzero_when_settings_loading_fails(monkeypatch) -> None:
+    def fail_settings() -> Settings:
+        raise RuntimeError("synthetic settings failure")
+
+    monkeypatch.setattr(runner_module, "get_settings", fail_settings)
+
+    exit_code = runner_module.main(
+        [
+            "--suite",
+            "fake",
+            "--domain",
+            "overall",
+            "--models",
+            "openai/gpt-4o",
+        ]
+    )
+
+    assert exit_code != 0

@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
+import evalbench.registry as registry_module
 from evalbench.models import (
     AggregatedModelRow,
     Estimate,
@@ -378,3 +379,80 @@ def test_default_refusal_detection_is_case_and_whitespace_insensitive(
 )
 def test_default_refusal_detection_allows_ordinary_answers(raw_output: str) -> None:
     assert CompleteSuite().detect_refusal(raw_output) is False
+
+
+def named_suite(name: str) -> CompleteSuite:
+    suite = CompleteSuite()
+    suite.name = name
+    return suite
+
+
+def test_register_suite_rejects_duplicate_name(monkeypatch) -> None:
+    with monkeypatch.context() as scoped:
+        scoped.setattr(registry_module, "SUITES", {})
+        first = named_suite("duplicate")
+        registry_module.register_suite(first)
+
+        with pytest.raises(ValueError, match="duplicate"):
+            registry_module.register_suite(named_suite("duplicate"))
+
+        assert registry_module.get_suite("duplicate") is first
+
+
+def test_get_suite_unknown_name_lists_registered_choices(monkeypatch) -> None:
+    with monkeypatch.context() as scoped:
+        scoped.setattr(registry_module, "SUITES", {})
+        registry_module.register_suite(named_suite("beta"))
+        registry_module.register_suite(named_suite("alpha"))
+
+        with pytest.raises(KeyError) as exc_info:
+            registry_module.get_suite("missing")
+
+        message = str(exc_info.value)
+        assert "missing" in message
+        assert "alpha" in message
+        assert "beta" in message
+
+
+def test_list_suites_sorts_by_name(monkeypatch) -> None:
+    with monkeypatch.context() as scoped:
+        scoped.setattr(registry_module, "SUITES", {})
+        registry_module.register_suite(named_suite("zeta"))
+        registry_module.register_suite(named_suite("alpha"))
+
+        assert [suite.name for suite in registry_module.list_suites()] == [
+            "alpha",
+            "zeta",
+        ]
+
+
+@pytest.mark.parametrize(
+    "suite",
+    registry_module.list_suites(),
+    ids=lambda suite: suite.name,
+)
+def test_registered_suite_contract_is_stable_and_declared(suite: Suite) -> None:
+    assert len(suite.metric_keys) == len(set(suite.metric_keys))
+    assert all(
+        set(display_metric) == {
+            "key",
+            "label",
+            "format",
+            "higher_is_better",
+        }
+        for display_metric in suite.display_metrics
+    )
+    assert {
+        display_metric["key"] for display_metric in suite.display_metrics
+    }.issubset(suite.metric_keys)
+
+    first_tasks = suite.load_tasks("overall")
+    second_tasks = suite.load_tasks("overall")
+    first_ids = [task.id for task in first_tasks]
+    assert first_ids == [task.id for task in second_tasks]
+    assert len(first_ids) == len(set(first_ids))
+
+    for task in first_tasks:
+        metrics = suite.evaluate(task, "", object())
+        assert set(metrics).issubset(suite.metric_keys)
+        assert all(isinstance(value, float) for value in metrics.values())
