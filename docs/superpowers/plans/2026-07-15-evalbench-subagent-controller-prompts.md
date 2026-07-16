@@ -1,8 +1,10 @@
 # EvalBench Subagent-Driven Controller Prompts
 
-Copy one prompt into a fresh controller session. Run the phases in order and use `/clear` between them. Each controller prompt is self-contained and deliberately ends at its phase boundary.
+Copy one prompt into a fresh Codex controller session. Run the phases in order and use `/clear` between them. Each controller prompt is self-contained and deliberately ends at its phase boundary. The controller is running in the checked-out repository root; resolve all paths relative to that root and do not assume a particular filesystem location.
 
-The collaboration tool in this environment may not expose a per-dispatch model selector. If it does, select a concrete model explicitly for every implementer/reviewer according to the routing in the prompt. If it does not, record that limitation and still use fresh agents, reserving the most capable available session/agent for `[STRONGER MODEL]` work and the whole-phase review.
+Global model requirement for every prompt below: use GPT-5.6 Luna with high reasoning effort for the controller, every implementer, every reviewer, every fixer, and every whole-phase review. Treat this requirement as higher priority than model-routing language in the phase plan. Request that model explicitly on every dispatch. If the cloud surface does not expose a model selector or rejects that exact model label, record the limitation in the durable report and use the strongest available model with high reasoning effort rather than silently selecting a lower tier.
+
+If Superpowers or the `superpowers:subagent-driven-development` skill is unavailable in the cloud session, manually reproduce its workflow with the available subagent mechanism: one fresh implementer per numbered task, one fresh spec-and-quality reviewer after each task, a fixer plus re-review for every Critical/Important finding, and one strongest available whole-phase reviewer at the end. Do not skip the loop merely because the skill is unavailable.
 
 ## Phase 1 controller prompt
 
@@ -10,19 +12,22 @@ The collaboration tool in this environment may not expose a per-dispatch model s
 /using-superpowers
 /subagent-driven-development
 
-You are the controller for EvalBench Phase 1 only. Work in:
-/Users/akashhp/Developer/evalbench
+Model requirement: use GPT-5.6 Luna with high reasoning effort for this controller and every implementer, reviewer, fixer, and whole-phase reviewer. Request it explicitly on every dispatch, regardless of the phase plan's routing. If the cloud surface cannot select or recognize that exact model, record the limitation and use the strongest available model with high reasoning effort.
+
+If Superpowers or the named skill is unavailable, manually execute the same loop with the available subagent mechanism: fresh implementer per task, fresh reviewer after each task, fixer plus re-review for every Critical/Important finding, and strongest available whole-phase reviewer.
+
+You are the controller for EvalBench Phase 1 only. Work in the checked-out repository root.
 
 Read these files in full before any implementation action:
-1. /Users/akashhp/Developer/evalbench/SPEC.md
-2. /Users/akashhp/Developer/evalbench/docs/superpowers/plans/2026-07-15-evalbench-phase-1-core.md
+1. SPEC.md
+2. docs/superpowers/plans/2026-07-15-evalbench-phase-1-core.md
 3. The complete superpowers:subagent-driven-development SKILL.md and every prompt/template it requires.
 
 Use superpowers:subagent-driven-development for the entire phase. You are a controller, not the implementer. Dispatch a fresh implementer agent for every numbered Task in the Phase 1 plan, followed by a fresh task reviewer that checks both spec compliance and code quality. Critical or Important findings must go to a fixer and then through re-review before the task is marked complete. After all tasks, dispatch one strongest-available whole-phase reviewer against SPEC.md and the Phase 1 plan. Do not pause between tasks unless genuinely blocked, a plan/spec conflict requires user judgment, or the phase is complete.
 
 Preflight:
 - Inspect git status and branch without changing user work.
-- This repository initially has no commits. Before Task 1, create one baseline commit containing only SPEC.md and docs/superpowers/plans/*.md, with message: docs: add evalbench specification and execution plans. This gives review-package a valid BASE commit. Do not include implementation files in this baseline.
+- Inspect HEAD before Task 1. If there is no valid HEAD, create a baseline commit containing only SPEC.md and docs/superpowers/plans/*.md, with message: docs: add evalbench specification and execution plans. If HEAD already exists, preserve it and do not create a redundant baseline commit. Do not include implementation files in a new baseline.
 - Scan the Phase 1 plan once for internal conflicts. Batch any genuine conflicts into one question before dispatching Task 1. If clean, proceed without asking.
 - Initialize or resume .superpowers/sdd/progress.md. Trust completed ledger entries and git history; never redispatch completed tasks.
 - Record the phase baseline SHA after the documentation baseline commit.
@@ -36,10 +41,7 @@ For every Task N:
 6. Mark the task complete in the ledger only after clean spec and quality verdicts.
 
 Model routing when selectable:
-- Cheapest capable model: purely mechanical scaffolding or small isolated file edits with exact instructions.
-- Standard model: store, runner integration, API, frontend build wiring, and multi-file tests.
-- Strongest model: every step tagged [STRONGER MODEL REVIEW], async/concurrency test design, confidence-interval/aggregation math review, pricing verification, and the whole-phase review.
-- Reviewers use at least a standard model; never use the cheapest tier for subtle concurrency/statistics/API reviews.
+- Use GPT-5.6 Luna with high reasoning effort for every controller and subagent dispatch, including mechanical edits and all reviews. Do not downgrade any dispatch based on task size.
 
 Non-negotiable execution rules:
 - SPEC.md is the source of truth. Do not redesign or expand scope.
@@ -47,14 +49,14 @@ Non-negotiable execution rules:
 - No real LiteLLM calls in tests. Do not make a paid external model call unless the user separately authorizes spend and the needed environment keys already exist.
 - Do not log or expose secrets. Never inspect or print secret values.
 - Preserve unrelated/user changes. Never use destructive git commands.
-- Commit each task as the plan requires. There is no remote: do not push or create a PR.
+- Commit each task as the plan requires. Do not push or create a PR during the task loop unless the controller explicitly authorizes publication.
 
 Whole-phase gate:
 - Run every Phase 1 verification command fresh, including backend tests, frontend lint/build, git diff checks, secret hygiene, and separate startup smoke tests for make api and make web.
 - Create a whole-phase review package from PHASE_BASE_SHA to HEAD and dispatch the strongest-available final reviewer against SPEC.md plus the Phase 1 plan.
 - Send the complete final-review findings list to one fixer, re-run affected/full gates, and re-review until no Critical/Important findings remain.
 - Confirm the working tree contains no accidental implementation changes beyond Phase 1 scope. Do not hide the untracked database or env file by staging it.
-- If finishing-a-development-branch is inapplicable because work is already on local main with no remote, state that and do not create a branch/PR merely for ceremony.
+- Do not create a branch or PR merely for ceremony. Publish only when the controller or user explicitly requests it.
 
 Final response must report: DONE or BLOCKED; final commit hash; task ledger summary; exact test/lint/build/smoke commands and results; whole-phase review verdict; changed paths; remaining Minor findings; and any real API calls made (normally none). Then stop. Do not begin Phase 2. Tell the user to /clear and use the Phase 2 controller prompt.
 ```
@@ -67,12 +69,15 @@ Final response must report: DONE or BLOCKED; final commit hash; task ledger summ
 /using-superpowers
 /subagent-driven-development
 
-You are the controller for EvalBench Phase 2 only. Work in:
-/Users/akashhp/Developer/evalbench
+Model requirement: use GPT-5.6 Luna with high reasoning effort for this controller and every implementer, reviewer, fixer, and whole-phase reviewer. Request it explicitly on every dispatch, regardless of the phase plan's routing. If the cloud surface cannot select or recognize that exact model, record the limitation and use the strongest available model with high reasoning effort.
+
+If Superpowers or the named skill is unavailable, manually execute the same loop with the available subagent mechanism: fresh implementer per task, fresh reviewer after each task, fixer plus re-review for every Critical/Important finding, and strongest available whole-phase reviewer.
+
+You are the controller for EvalBench Phase 2 only. Work in the checked-out repository root.
 
 Read these files in full before any implementation action:
-1. /Users/akashhp/Developer/evalbench/SPEC.md
-2. /Users/akashhp/Developer/evalbench/docs/superpowers/plans/2026-07-15-evalbench-phase-2-structured.md
+1. SPEC.md
+2. docs/superpowers/plans/2026-07-15-evalbench-phase-2-structured.md
 3. The complete superpowers:subagent-driven-development SKILL.md and every prompt/template it requires.
 
 Use superpowers:subagent-driven-development for the entire phase. Dispatch a fresh implementer for every numbered Task, a fresh spec-and-quality reviewer after every task, fix/re-review all Critical or Important findings, then run one strongest-available whole-phase review. Continue without human check-ins unless blocked, a real plan/spec conflict requires judgment, or Phase 2 is complete.
@@ -95,11 +100,11 @@ For every Task N, follow the official subagent-driven-development loop exactly:
 
 Non-negotiable rules:
 - Implement only suite #2 structured and its Phase 2 integration/documentation. Do not redesign core contracts or dashboard.
-- Exactly 40 tasks: 8 per domain and the exact adversarial distribution in the plan.
+- Exactly 40 dataset rows: 8 per domain and the exact adversarial distribution in the plan. This is a dataset count, not a requirement to invent 40 implementation tasks.
 - Field accuracy must retain partial credit from parseable but schema-invalid JSON.
 - Target and judge calls are mocked in all tests; no real API calls or spend without separate user authorization.
 - Never print keys/prompts/outputs containing secrets. Preserve unrelated work. No destructive git.
-- Commit tasks locally. No remote exists; do not push or create a PR.
+- Commit each task in the current repository workspace. Do not push or create a PR during the task loop unless the controller explicitly authorizes publication.
 
 Whole-phase gate:
 - Run all Phase 2 backend tests, frontend lint/build, make api and make web startup smokes, /suites metadata check, schema/core no-diff check, secret hygiene, and git diff --check.
@@ -117,12 +122,15 @@ Final response must report: DONE or BLOCKED; final commit hash; task ledger; exa
 /using-superpowers
 /subagent-driven-development
 
-You are the controller for EvalBench Phase 3 only. Work in:
-/Users/akashhp/Developer/evalbench
+Model requirement: use GPT-5.6 Luna with high reasoning effort for this controller and every implementer, reviewer, fixer, and whole-phase reviewer. Request it explicitly on every dispatch, regardless of the phase plan's routing. If the cloud surface cannot select or recognize that exact model, record the limitation and use the strongest available model with high reasoning effort.
+
+If Superpowers or the named skill is unavailable, manually execute the same loop with the available subagent mechanism: fresh implementer per task, fresh reviewer after each task, fixer plus re-review for every Critical/Important finding, and strongest available whole-phase reviewer.
+
+You are the controller for EvalBench Phase 3 only. Work in the checked-out repository root.
 
 Read these files in full before any implementation action:
-1. /Users/akashhp/Developer/evalbench/SPEC.md
-2. /Users/akashhp/Developer/evalbench/docs/superpowers/plans/2026-07-15-evalbench-phase-3-dashboard.md
+1. SPEC.md
+2. docs/superpowers/plans/2026-07-15-evalbench-phase-3-dashboard.md
 3. The complete superpowers:subagent-driven-development SKILL.md and every prompt/template it requires.
 
 Use superpowers:subagent-driven-development throughout Phase 3: fresh implementer per numbered Task, fresh spec-and-quality reviewer after each, fixer plus re-review for every Critical/Important issue, and one strongest-available whole-dashboard review at the end. Do not pause for routine approval between tasks.
@@ -147,7 +155,7 @@ Non-negotiable rules:
 - Under-8% stacked labels are hidden inline and shown in tooltip. Segment order and non-color redundancy are fixed.
 - Follow the restrained visual rules exactly: off-white, muted colors, generous spacing, no gradients or decorative shadows.
 - Do not redesign backend/core. Do not make real model calls. Preserve unrelated work and never use destructive git.
-- Commit locally; no push/PR because no remote exists.
+- Commit task changes in the current repository workspace; do not push or create a PR during the task loop unless the controller explicitly authorizes publication.
 
 Whole-phase gate:
 - Run fresh backend tests, frontend lint/build, git diff --check, and separate make api/make web startup smokes.
@@ -166,12 +174,15 @@ Final response must report: DONE or BLOCKED; final commit hash; ledger summary; 
 /using-superpowers
 /subagent-driven-development
 
-You are the controller for EvalBench Phase 4 only. Work in:
-/Users/akashhp/Developer/evalbench
+Model requirement: use GPT-5.6 Luna with high reasoning effort for this controller and every implementer, reviewer, fixer, and whole-phase reviewer. Request it explicitly on every dispatch, regardless of the phase plan's routing. If the cloud surface cannot select or recognize that exact model, record the limitation and use the strongest available model with high reasoning effort.
+
+If Superpowers or the named skill is unavailable, manually execute the same loop with the available subagent mechanism: fresh implementer per task, fresh reviewer after each task, fixer plus re-review for every Critical/Important finding, and strongest available whole-phase reviewer.
+
+You are the controller for EvalBench Phase 4 only. Work in the checked-out repository root.
 
 Read these files in full before any implementation action:
-1. /Users/akashhp/Developer/evalbench/SPEC.md
-2. /Users/akashhp/Developer/evalbench/docs/superpowers/plans/2026-07-15-evalbench-phase-4-latency-cost.md
+1. SPEC.md
+2. docs/superpowers/plans/2026-07-15-evalbench-phase-4-latency-cost.md
 3. The complete superpowers:subagent-driven-development SKILL.md and every prompt/template it requires.
 
 Use superpowers:subagent-driven-development for all Phase 4 tasks: fresh implementer per numbered Task, fresh spec-and-quality reviewer after each, fixes plus re-review for Critical/Important findings, then strongest-available whole-phase review. Continue without routine user prompts.
@@ -190,7 +201,7 @@ Non-negotiable rules:
 - Approximately 20% deterministic sample; exactly three calls on sampled rows; quality uses modal verdict; judge_variance is disagreement from the modal; unsampled rows omit judge_variance.
 - Exactly 20 fixed-reference tasks with rubric and stored reference-model provenance.
 - No real target/judge call or spend unless separately authorized. Existing tests must remain mock-only.
-- No destructive git, no remote operations, no scope expansion.
+- No destructive git, no publication during task execution, and no scope expansion.
 
 Whole-phase gate:
 - Run all existing backend tests and frontend lint/build, API/dashboard synthetic smoke, make api/make web startup smokes, and git diff --check.
@@ -198,7 +209,7 @@ Whole-phase gate:
 - Generate a whole-phase review package and use the strongest reviewer to check pairwise neutrality, A/B mapping, modal/all-different behavior, sampling/metric n, fixed-reference quality, derived dashboard compatibility, and exact additive invariant.
 - Fix/re-review all Critical/Important findings with one final fixer wave if needed.
 
-Final response must report: DONE or BLOCKED; final hash; task ledger; exact verification results; sample-rate check; allowed-path output proving zero core/dashboard changes; final review verdict; remaining Minor findings; and whether any real API calls occurred. There is no remote, so provide PR-description evidence in the response only. Then stop. Do not begin Phase 5. Tell the user to /clear and use the Phase 5 controller prompt.
+Final response must report: DONE or BLOCKED; final hash; task ledger; exact verification results; sample-rate check; allowed-path output proving zero core/dashboard changes; final review verdict; remaining Minor findings; and whether any real API calls occurred. Do not publish unless the user explicitly requests it. Then stop. Do not begin Phase 5. Tell the user to /clear and use the Phase 5 controller prompt.
 ```
 
 
@@ -209,12 +220,15 @@ Final response must report: DONE or BLOCKED; final hash; task ledger; exact veri
 /using-superpowers
 /subagent-driven-development
 
-You are the controller for EvalBench Phase 5 only. Work in:
-/Users/akashhp/Developer/evalbench
+Model requirement: use GPT-5.6 Luna with high reasoning effort for this controller and every implementer, reviewer, fixer, and whole-phase reviewer. Request it explicitly on every dispatch, regardless of the phase plan's routing. If the cloud surface cannot select or recognize that exact model, record the limitation and use the strongest available model with high reasoning effort.
+
+If Superpowers or the named skill is unavailable, manually execute the same loop with the available subagent mechanism: fresh implementer per task, fresh reviewer after each task, fixer plus re-review for every Critical/Important finding, and strongest available whole-phase reviewer.
+
+You are the controller for EvalBench Phase 5 only. Work in the checked-out repository root.
 
 Read these files in full before any implementation action:
-1. /Users/akashhp/Developer/evalbench/SPEC.md
-2. /Users/akashhp/Developer/evalbench/docs/superpowers/plans/2026-07-15-evalbench-phase-5-rag.md
+1. SPEC.md
+2. docs/superpowers/plans/2026-07-15-evalbench-phase-5-rag.md
 3. The complete superpowers:subagent-driven-development SKILL.md and every prompt/template it requires.
 
 Use superpowers:subagent-driven-development for every Phase 5 task: fresh implementer, fresh task reviewer, fixes and re-review for all Critical/Important findings, then one strongest-available final whole-project review. Continue continuously unless genuinely blocked or user judgment is required.
@@ -233,7 +247,7 @@ Non-negotiable rules:
 - Allowed strategies exactly fixed_512, recursive, semantic. Exact five metrics only.
 - RAG is cold per query in v1 so universal embedding latency/tokens/cost remain comparable and runner-owned; no unmetered embedding cache.
 - Tests and verification use fake embedding/judge calls. No paid call without separate user authorization and available keys.
-- No destructive git, scope expansion, push, or PR.
+- No destructive git, publication during task execution, or scope expansion.
 
 Whole-phase/project gate:
 - Run uv sync, all backend tests, npm ci/lint/build, git diff --check, make api and make web startup smokes, the 200/15 dataset audit, fake persisted-model integration, API results checks, and generic dashboard RAG checks.
@@ -242,6 +256,5 @@ Whole-phase/project gate:
 - Strongest final reviewer must audit label quality, chunk invariants, deduplicated retrieval formulas, context precision denominator, faithfulness separation, composite model identity/provider/family behavior, universal metering/error capture, dynamic dashboard behavior, security, and zero Phase 4/5 core/dashboard edits.
 - Send the complete final findings list to one fixer, rerun affected and full gates, then re-review until no Critical/Important issues remain.
 
-Final response must report: DONE or BLOCKED; final main hash and git status; all task ledger entries; exact verification evidence; corpus/query/domain/gold audit; model-encoding evidence; Phase 4 and Phase 5 allowed-path outputs; final reviewer verdict; remaining Minor findings; and any real API calls made. There is no remote, so provide additive/PR evidence in the response, not a PR. Stop after Phase 5; do not invent further work.
+Final response must report: DONE or BLOCKED; final hash and git status; all task ledger entries; exact verification evidence; corpus/query/domain/gold audit; model-encoding evidence; Phase 4 and Phase 5 allowed-path outputs; final reviewer verdict; remaining Minor findings; and any real API calls made. Do not publish unless the user explicitly requests it. Stop after Phase 5; do not invent further work.
 ```
-
