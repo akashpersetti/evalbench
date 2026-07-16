@@ -200,15 +200,24 @@ def make_context(
     )
 
 
-def test_clean_first_import_and_construction_do_not_call_litellm() -> None:
+def test_clean_first_import_and_construction_have_no_external_side_effects(
+    tmp_path: Path,
+) -> None:
     script = textwrap.dedent(
         """
         import importlib
+        import os
         import sys
+        from pathlib import Path
 
         import litellm
+        import evalbench.store as store_module
+
+        workdir = Path(sys.argv[1])
+        os.chdir(workdir)
 
         attempted_calls = []
+        schema_initializations = []
 
         def fail_completion(**kwargs):
             attempted_calls.append(("completion", kwargs))
@@ -221,10 +230,18 @@ def test_clean_first_import_and_construction_do_not_call_litellm() -> None:
         litellm.completion = fail_completion
         litellm.embedding = fail_embedding
 
+        async def fail_init_db(*args, **kwargs):
+            schema_initializations.append((args, kwargs))
+            raise AssertionError("schema initialized during import")
+
+        store_module.init_db = fail_init_db
+
         assert "evalbench.judge" not in sys.modules
         assert "evalbench.runner" not in sys.modules
+        assert "evalbench.api.app" not in sys.modules
         judge_module = importlib.import_module("evalbench.judge")
         runner_module = importlib.import_module("evalbench.runner")
+        api_module = importlib.import_module("evalbench.api.app")
 
         judge_module.Judge("openai/gpt-4o", timeout_seconds=1.0)
         runner_module.ExecutionContext(
@@ -238,11 +255,14 @@ def test_clean_first_import_and_construction_do_not_call_litellm() -> None:
         )
 
         assert attempted_calls == []
+        assert schema_initializations == []
+        assert api_module.init_db is fail_init_db
+        assert not list(workdir.glob("*.db*"))
         """
     )
 
     result = subprocess.run(
-        [sys.executable, "-I", "-c", script],
+        [sys.executable, "-I", "-c", script, str(tmp_path)],
         check=False,
         capture_output=True,
         text=True,
@@ -407,30 +427,74 @@ def test_execution_context_embed_selects_model_and_meters_call(
     assert context.calls[0].latency_ms == pytest.approx(50.0)
 
 
-@pytest.mark.parametrize("operation", ["complete", "embed"])
-def test_execution_context_propagates_provider_errors_after_stopping_timer(
-    monkeypatch, operation: str
+def test_failed_completion_retains_elapsed_latency_without_usage_or_real_call(
+    monkeypatch,
 ) -> None:
-    completion = FakeCompletion(error=RuntimeError("synthetic failure"))
-    embedding = FakeEmbedding(error=RuntimeError("synthetic failure"))
-    context = make_context(completion=completion, embedding=embedding)
-    clock_reads: list[float] = []
+    completion = FakeCompletion(error=TimeoutError("synthetic timeout"))
+    attempted_real_calls: list[dict[str, Any]] = []
 
-    def perf_counter() -> float:
-        value = 30.0 + len(clock_reads)
-        clock_reads.append(value)
-        return value
+    def reject_real_provider_call(**kwargs: Any) -> None:
+        attempted_real_calls.append(kwargs)
+        raise AssertionError("real LiteLLM call attempted")
 
-    monkeypatch.setattr(runner_module.time, "perf_counter", perf_counter)
+    monkeypatch.setattr(litellm, "completion", reject_real_provider_call)
+    monkeypatch.setattr(litellm, "embedding", reject_real_provider_call)
+    clock = iter([30.0, 30.25])
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+    context = make_context(
+        completion=completion,
+        pricing_fn=lambda *_: (_ for _ in ()).throw(
+            AssertionError("failed call must not be priced")
+        ),
+    )
 
-    with pytest.raises(RuntimeError, match="synthetic failure"):
-        if operation == "complete":
-            context.complete([])
-        else:
-            context.embed([])
+    with pytest.raises(TimeoutError, match="synthetic timeout"):
+        context.complete([])
 
-    assert clock_reads == [30.0, 31.0]
-    assert context.calls == []
+    assert attempted_real_calls == []
+    assert len(completion.calls) == 1
+    assert len(context.calls) == 1
+    failed_call = context.calls[0]
+    assert failed_call.text == ""
+    assert failed_call.prompt_tokens == 0
+    assert failed_call.completion_tokens == 0
+    assert failed_call.cost_usd == 0.0
+    assert failed_call.latency_ms == pytest.approx(250.0)
+
+
+def test_failed_embedding_retains_elapsed_latency_without_usage_or_real_call(
+    monkeypatch,
+) -> None:
+    embedding = FakeEmbedding(error=TimeoutError("synthetic timeout"))
+    attempted_real_calls: list[dict[str, Any]] = []
+
+    def reject_real_provider_call(**kwargs: Any) -> None:
+        attempted_real_calls.append(kwargs)
+        raise AssertionError("real LiteLLM call attempted")
+
+    monkeypatch.setattr(litellm, "completion", reject_real_provider_call)
+    monkeypatch.setattr(litellm, "embedding", reject_real_provider_call)
+    clock = iter([40.0, 40.125])
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+    context = make_context(
+        embedding=embedding,
+        pricing_fn=lambda *_: (_ for _ in ()).throw(
+            AssertionError("failed call must not be priced")
+        ),
+    )
+
+    with pytest.raises(TimeoutError, match="synthetic timeout"):
+        context.embed([])
+
+    assert attempted_real_calls == []
+    assert len(embedding.calls) == 1
+    assert len(context.calls) == 1
+    failed_call = context.calls[0]
+    assert failed_call.text == ""
+    assert failed_call.prompt_tokens == 0
+    assert failed_call.completion_tokens == 0
+    assert failed_call.cost_usd == 0.0
+    assert failed_call.latency_ms == pytest.approx(125.0)
 
 
 def test_judge_complete_text_uses_injected_callable_timeout_and_rng() -> None:

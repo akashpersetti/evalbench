@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, inspect
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -69,12 +69,20 @@ async def test_engine_and_session_factory_use_required_async_settings(
         factory = create_session_factory(file_engine)
 
         assert file_engine.echo is False
-        assert file_engine.sync_engine.pool._pre_ping is True
         assert not isinstance(file_engine.sync_engine.pool, StaticPool)
         assert isinstance(memory_engine.sync_engine.pool, StaticPool)
-        assert factory.class_ is AsyncSession
-        assert factory.kw["expire_on_commit"] is False
-        assert factory.kw["autoflush"] is False
+        async with factory() as session:
+            assert isinstance(session, AsyncSession)
+            assert session.autoflush is False
+            assert session.sync_session.expire_on_commit is False
+
+        async with file_engine.connect() as connection:
+            raw_connection = await connection.get_raw_connection()
+            driver_connection = raw_connection.driver_connection
+            assert await connection.scalar(text("SELECT 1")) == 1
+        await driver_connection.close()
+        async with file_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT 1")) == 1
     finally:
         await file_engine.dispose()
         await memory_engine.dispose()
@@ -141,6 +149,7 @@ async def test_init_db_creates_portable_metric_record_schema(store) -> None:
 async def test_record_round_trips_json_and_utc_timestamp_exactly(store) -> None:
     _, factory = store
     record = make_record(
+        error="TimeoutError",
         metrics={"schema_valid": 0.75, "judge_score": 0.625},
         created_at=datetime(
             2026,
@@ -158,6 +167,7 @@ async def test_record_round_trips_json_and_utc_timestamp_exactly(store) -> None:
     restored = await get_run_records(factory, record.run_id)
 
     assert restored == [record]
+    assert restored[0].error == "TimeoutError"
     assert restored[0].metrics == record.metrics
     assert restored[0].created_at == record.created_at
     assert restored[0].created_at.tzinfo is timezone.utc

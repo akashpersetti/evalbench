@@ -169,6 +169,16 @@ logic on that context.
 `GET /results` returns this exact top-level shape (once a future phase registers
 a suite and records exist):
 
+The request requires a `suite` query parameter. `domain` supports `overall`,
+`software`, `finance`, `legal`, `medical`, and `physics` (default `overall`).
+`window_days` may be omitted or set to `7`, `30`, or `90`.
+`exclude_refusals` is a boolean (default `false`), and `families` is a repeated
+query parameter for model-family filters. For example:
+
+```text
+GET /results?suite=structured&domain=software&window_days=30&exclude_refusals=true&families=OpenAI&families=Anthropic
+```
+
 ```json
 {
   "suite": "string",

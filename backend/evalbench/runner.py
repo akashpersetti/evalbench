@@ -355,8 +355,19 @@ class ExecutionContext:
                 messages=messages,
                 timeout=timeout_seconds,
             )
-        finally:
+        except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
+            self.calls.append(
+                CallResult(
+                    text="",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    cost_usd=0.0,
+                    latency_ms=elapsed_ms,
+                )
+            )
+            raise
+        elapsed_ms = (time.perf_counter() - started_at) * 1_000
 
         text, prompt_tokens, completion_tokens = _normalize_completion_fields(response)
         result = CallResult(
@@ -400,8 +411,19 @@ class ExecutionContext:
                 input=texts,
                 timeout=self._timeout_seconds,
             )
-        finally:
+        except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
+            self.calls.append(
+                CallResult(
+                    text="",
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    cost_usd=0.0,
+                    latency_ms=elapsed_ms,
+                )
+            )
+            raise
+        elapsed_ms = (time.perf_counter() - started_at) * 1_000
 
         vectors, prompt_tokens = normalize_embedding_response(response)
         self.calls.append(
