@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 from inspect import signature
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
+import evalbench.judge as judge_module
 import evalbench.registry as registry_module
+import evalbench.runner as runner_module
 from evalbench.models import (
     AggregatedModelRow,
     Estimate,
@@ -335,6 +338,38 @@ class CompleteSuite(MissingEvaluateSuite):
         return {"score": 1.0}
 
 
+class DependencyUsingSuite(Suite):
+    name = "dependency-using"
+    metric_keys = ["score"]
+    display_metrics = [
+        {
+            "key": "score",
+            "label": "Score",
+            "format": "percent",
+            "higher_is_better": True,
+        }
+    ]
+
+    def load_tasks(self, domain: str) -> list[Task]:
+        return [
+            Task(
+                id="dependency-1",
+                domain="software",
+                prompt="synthetic dependency prompt",
+            )
+        ]
+
+    def build_prompt(self, task: Task) -> list[dict]:
+        return [{"role": "user", "content": task.prompt}]
+
+    def evaluate(
+        self, task: Task, raw_output: str, judge: judge_module.Judge
+    ) -> dict[str, float]:
+        context_output = task._execution_context.complete([]).text
+        judge_output = judge.complete_text([])
+        return {"score": float(bool(context_output and judge_output))}
+
+
 def test_suite_cannot_omit_abstract_evaluate() -> None:
     with pytest.raises(TypeError):
         MissingEvaluateSuite()
@@ -432,6 +467,33 @@ def test_list_suites_sorts_by_name(monkeypatch) -> None:
     ids=lambda suite: suite.name,
 )
 def test_registered_suite_contract_is_stable_and_declared(suite: Suite) -> None:
+    _assert_suite_contract(suite)
+
+
+def _contract_completion(**kwargs: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"score": 1.0, "winner": "tie"}'
+                )
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
+    )
+
+
+def _contract_embedding(**kwargs: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        data=[
+            SimpleNamespace(embedding=[1.0, 0.0])
+            for _ in kwargs["input"]
+        ],
+        usage=SimpleNamespace(prompt_tokens=len(kwargs["input"])),
+    )
+
+
+def _assert_suite_contract(suite: Suite) -> None:
     assert len(suite.metric_keys) == len(set(suite.metric_keys))
     assert all(
         set(display_metric) == {
@@ -453,6 +515,28 @@ def test_registered_suite_contract_is_stable_and_declared(suite: Suite) -> None:
     assert len(first_ids) == len(set(first_ids))
 
     for task in first_tasks:
-        metrics = suite.evaluate(task, "", object())
+        context = runner_module.ExecutionContext(
+            run_id="contract-run",
+            model="openai/gpt-4o",
+            task_id=task.id,
+            completion_fn=_contract_completion,
+            embedding_fn=_contract_embedding,
+            timeout_seconds=1.0,
+            pricing_fn=lambda model, prompt_tokens, completion_tokens: 0.0,
+        )
+        judge = judge_module.Judge(
+            "anthropic/claude-sonnet-4-5",
+            completion_fn=_contract_completion,
+            timeout_seconds=1.0,
+        )
+        task._execution_context = context
+        try:
+            metrics = suite.evaluate(task, "", judge)
+        finally:
+            task._execution_context = None
         assert set(metrics).issubset(suite.metric_keys)
         assert all(isinstance(value, float) for value in metrics.values())
+
+
+def test_suite_contract_supports_judge_and_execution_context_dependencies() -> None:
+    _assert_suite_contract(DependencyUsingSuite())

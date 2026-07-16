@@ -115,13 +115,19 @@ class ExecutionContext:
     def task_id(self) -> str:
         return self._task_id
 
-    def complete(self, messages: list[dict]) -> CallResult:
+    def _complete_with_model(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        timeout_seconds: float,
+    ) -> tuple[Any, CallResult]:
         started_at = time.perf_counter()
         try:
             response = self._completion_fn(
-                model=self.model,
+                model=model,
                 messages=messages,
-                timeout=self._timeout_seconds,
+                timeout=timeout_seconds,
             )
         finally:
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
@@ -132,11 +138,29 @@ class ExecutionContext:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=self._pricing_fn(
-                self.model, prompt_tokens, completion_tokens
+                model, prompt_tokens, completion_tokens
             ),
             latency_ms=elapsed_ms,
         )
         self.calls.append(result)
+        return response, result
+
+    def _metered_completion(
+        self, *, model: str, messages: list[dict], timeout: float
+    ) -> Any:
+        response, _ = self._complete_with_model(
+            model=model,
+            messages=messages,
+            timeout_seconds=timeout,
+        )
+        return response
+
+    def complete(self, messages: list[dict]) -> CallResult:
+        _, result = self._complete_with_model(
+            model=self.model,
+            messages=messages,
+            timeout_seconds=self._timeout_seconds,
+        )
         return result
 
     def embed(
@@ -199,7 +223,7 @@ def _execute_one_sync(
             raw_output = context.complete(suite.build_prompt(task)).text
         judge = Judge(
             judge_model,
-            completion_fn=completion_fn,
+            completion_fn=context._metered_completion,
             timeout_seconds=timeout_seconds,
         )
         metrics = suite.evaluate(task, raw_output, judge)

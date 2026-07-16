@@ -864,6 +864,81 @@ def test_successful_execution_preserves_omitted_declared_metrics() -> None:
     assert task._execution_context is None
 
 
+def test_successful_judge_call_is_included_in_universal_metering(
+    monkeypatch,
+) -> None:
+    class JudgeCallingSuite(Suite):
+        name = "judge-calling"
+        metric_keys = ["score"]
+        display_metrics = []
+
+        def load_tasks(self, domain: str) -> list[Task]:
+            return []
+
+        def build_prompt(self, task: Task) -> list[dict]:
+            return []
+
+        def evaluate(
+            self, task: Task, raw_output: str, judge: judge_module.Judge
+        ) -> dict[str, float]:
+            return {
+                "score": judge.score_free_text(
+                    prompt=task.prompt,
+                    expected="synthetic expected",
+                    actual=raw_output,
+                    rubric="synthetic rubric",
+                )
+            }
+
+    completion = FakeCompletion(
+        '{"score": 0.75}',
+        prompt_tokens=11,
+        completion_tokens=4,
+    )
+    pricing_calls: list[tuple[str, int, int]] = []
+
+    def pricing_fn(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+        pricing_calls.append((model, prompt_tokens, completion_tokens))
+        return 1.25
+
+    def reject_real_completion(**kwargs: Any) -> None:
+        raise AssertionError(f"unexpected real provider call: {kwargs}")
+
+    clock = iter([40.0, 40.25])
+    monkeypatch.setattr(litellm, "completion", reject_real_completion)
+    monkeypatch.setattr(runner_module.time, "perf_counter", lambda: next(clock))
+    task = Task(
+        id="judge-only-1",
+        domain="legal",
+        prompt="synthetic judge-only prompt",
+        requires_generation=False,
+    )
+
+    record = runner_module._execute_one_sync(
+        suite=JudgeCallingSuite(),
+        task=task,
+        model="openai/gpt-4o",
+        run_id="run-judge-metering",
+        judge_model="anthropic/claude-sonnet-4-5",
+        completion_fn=completion,
+        embedding_fn=FakeEmbedding(),
+        timeout_seconds=2.0,
+        pricing_fn=pricing_fn,
+    )
+
+    assert record.error is None
+    assert record.metrics == {"score": 0.75}
+    assert len(completion.calls) == 1
+    assert completion.calls[0]["model"] == "anthropic/claude-sonnet-4-5"
+    assert completion.calls[0]["timeout"] == 2.0
+    assert pricing_calls == [("anthropic/claude-sonnet-4-5", 11, 4)]
+    assert record.prompt_tokens == 11
+    assert record.completion_tokens == 4
+    assert record.cost_usd == 1.25
+    assert record.latency_ms == pytest.approx(250.0)
+    assert task._execution_context is None
+
+
 def test_main_parses_cli_initializes_database_and_returns_zero(
     monkeypatch, capsys
 ) -> None:
