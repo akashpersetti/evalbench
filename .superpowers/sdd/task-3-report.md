@@ -108,3 +108,56 @@ phase.
 ## Commit
 
 - `1e59cdd data: add structured benchmark tasks`
+
+## Task 3 review-fix evidence
+
+### Finding 1: numeric schema fields and float expected values
+
+- Changed paths: `backend/data/structured/medical.jsonl`,
+  `backend/data/structured/physics.jsonl`,
+  `backend/evalbench/suites/structured.py`, and
+  `backend/tests/test_suites.py`.
+- Updated every dataset `number` prompt cue that used integer-looking
+  spellings, including `140.0`, `92.0`, `299792458.0`, `220.0`, `7000000.0`,
+  and `5820.0`.
+- Added an all-dataset numeric audit covering exact `float` expected values and
+  decimal prompt cues, plus loader validation that rejects integer expected
+  values for `number` schemas before field-accuracy scoring can misclassify
+  them. Integer schema fields are also checked for exact `int` values.
+
+### Finding 2: legal-06 defaulted fields were not explicit in the prompt
+
+- Changed paths: `backend/data/structured/legal.jsonl` and
+  `backend/tests/test_suites.py`.
+- legal-06 now explicitly requests `time` and `days_after_service` for both
+  deadline entries, including the default values `unspecified` and `0`.
+- Added a focused prompt regression asserting all four defaulted-field cues.
+
+### Finding 3: loaded IDs accepted any suffix after the domain prefix
+
+- Changed paths: `backend/evalbench/suites/structured.py` and
+  `backend/tests/test_suites.py`.
+- Loader validation now requires the exact format `<domain>-NN` and retains
+  filename/line-numbered error wrapping.
+- Added a focused `software-1` malformed-ID regression.
+
+### Changed paths
+
+- `backend/data/structured/legal.jsonl`
+- `backend/data/structured/medical.jsonl`
+- `backend/data/structured/physics.jsonl`
+- `backend/evalbench/suites/structured.py`
+- `backend/tests/test_suites.py`
+- `.superpowers/sdd/task-3-report.md`
+
+### Verification commands and passing outputs
+
+```text
+uv run pytest backend/tests/test_suites.py -k 'structured and dataset' -q
+9 passed, 94 deselected in 1.99s
+
+uv run pytest backend/tests -q
+206 passed, 1 skipped in 4.33s
+```
+
+No target or judge calls were made.

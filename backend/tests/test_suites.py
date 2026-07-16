@@ -376,6 +376,41 @@ def _structured_dataset_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _structured_numeric_leaves(
+    schema: dict[str, Any], expected: Any, pointer: str = ""
+) -> list[tuple[str, Any, Any]]:
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        return [
+            leaf
+            for field_name, field_schema in schema["properties"].items()
+            for leaf in _structured_numeric_leaves(
+                field_schema,
+                expected[field_name],
+                f"{pointer}/{field_name}",
+            )
+        ]
+    if schema_type == "array":
+        return [
+            leaf
+            for index, item in enumerate(expected)
+            for leaf in _structured_numeric_leaves(
+                schema["items"], item, f"{pointer}/{index}"
+            )
+        ]
+    if schema_type in {"number", "integer"}:
+        return [(schema_type, pointer, expected)]
+    return []
+
+
+def _decimal_numeric_tokens(prompt: str) -> list[float]:
+    tokens = re.findall(
+        r"(?<![\w.])[-+]?(?:(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)(?![\w.])",
+        prompt,
+    )
+    return [float(token) for token in tokens]
+
+
 def test_structured_dataset_has_exact_balanced_files_ids_and_adversarial_split() -> None:
     expected_files = {
         f"{domain}.jsonl" for domain in STRUCTURED_DATASET_DOMAINS
@@ -432,6 +467,32 @@ def test_structured_dataset_rows_have_convertible_schemas_and_valid_expected_val
         validated = model.model_validate(row["expected"])
 
         assert validated.model_dump() == row["expected"]
+
+
+def test_structured_dataset_number_fields_preserve_float_types_and_decimal_cues() -> None:
+    for row in _structured_dataset_rows():
+        decimal_tokens = _decimal_numeric_tokens(row["prompt"])
+        for schema_type, pointer, value in _structured_numeric_leaves(
+            row["schema"], row["expected"]
+        ):
+            if schema_type == "number":
+                assert type(value) is float, pointer
+                assert any(token == value for token in decimal_tokens), (
+                    row["id"],
+                    pointer,
+                    value,
+                )
+            else:
+                assert type(value) is int, (row["id"], pointer, value)
+
+
+def test_structured_legal_06_prompt_requests_defaulted_schedule_fields() -> None:
+    row = next(row for row in _structured_dataset_rows() if row["id"] == "legal-06")
+
+    assert "time is unspecified" in row["prompt"]
+    assert "days_after_service is 10" in row["prompt"]
+    assert "time is 09:00" in row["prompt"]
+    assert "days_after_service is 0" in row["prompt"]
 
 
 def test_structured_dataset_free_text_pointers_resolve_without_expected_leakage() -> None:
@@ -523,6 +584,56 @@ def test_structured_dataset_loader_reports_filename_and_line_for_invalid_json(
 
     with pytest.raises(ValueError, match=r"software\.jsonl:3"):
         suite.load_tasks("software")
+
+
+def test_structured_dataset_loader_rejects_malformed_exact_task_id(
+    tmp_path: Path,
+) -> None:
+    row = {
+        "id": "software-1",
+        "domain": "software",
+        "prompt": "Return the supplied status as JSON.",
+        "schema": {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+            "required": ["status"],
+            "additionalProperties": False,
+        },
+        "expected": {"status": "ready"},
+        "free_text_fields": [],
+        "adversarial": False,
+    }
+    (tmp_path / "software.jsonl").write_text(
+        json.dumps(row) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="task id must match exact format software-NN"):
+        StructuredSuite(data_root=tmp_path).load_tasks("software")
+
+
+def test_structured_dataset_loader_rejects_integer_expected_for_number_field(
+    tmp_path: Path,
+) -> None:
+    row = {
+        "id": "software-01",
+        "domain": "software",
+        "prompt": "Return value 1.0 as JSON.",
+        "schema": {
+            "type": "object",
+            "properties": {"value": {"type": "number"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        "expected": {"value": 1},
+        "free_text_fields": [],
+        "adversarial": False,
+    }
+    (tmp_path / "software.jsonl").write_text(
+        json.dumps(row) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="number fields must use exact float values"):
+        StructuredSuite(data_root=tmp_path).load_tasks("software")
 
 
 def test_structured_schema_converts_nested_lists_enums_and_nullable_fields() -> None:

@@ -123,8 +123,10 @@ class StructuredSuite(Suite):
             raise ValueError("row must be an object")
         if set(row) != _STRUCTURED_ROW_KEYS:
             raise ValueError("row must contain exactly the structured task fields")
-        if not isinstance(row["id"], str) or not row["id"].startswith(f"{domain}-"):
-            raise ValueError("task id does not match the file domain")
+        if not isinstance(row["id"], str) or re.fullmatch(
+            rf"{re.escape(domain)}-\d{{2}}", row["id"]
+        ) is None:
+            raise ValueError(f"task id must match exact format {domain}-NN")
         if row["domain"] != domain:
             raise ValueError("task domain does not match the file domain")
         if not isinstance(row["prompt"], str) or not row["prompt"].strip():
@@ -135,8 +137,10 @@ class StructuredSuite(Suite):
             f"Structured_{row['id'].replace('-', '_')}", row["schema"]
         )
         expected = row["expected"]
-        if model.model_validate(expected).model_dump() != expected:
+        validated_expected = model.model_validate(expected)
+        if validated_expected.model_dump() != expected:
             raise ValueError("expected value did not preserve its exact shape")
+        _validate_numeric_contract(row["schema"], expected)
         free_text_fields = row["free_text_fields"]
         if (
             not isinstance(free_text_fields, list)
@@ -216,6 +220,34 @@ class StructuredSuite(Suite):
             "retry_cost_usd": float(retry_cost_usd),
             "field_accuracy": float(field_accuracy(task, latest_parsed, judge)),
         }
+
+
+def _validate_numeric_contract(
+    schema: dict[str, Any], expected: Any, pointer: str = ""
+) -> None:
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        for field_name, field_schema in schema["properties"].items():
+            _validate_numeric_contract(
+                field_schema,
+                expected[field_name],
+                f"{pointer}/{field_name}",
+            )
+        return
+    if schema_type == "array":
+        for index, item in enumerate(expected):
+            _validate_numeric_contract(
+                schema["items"], item, f"{pointer}/{index}"
+            )
+        return
+    if schema_type == "integer":
+        if type(expected) is not int:
+            raise ValueError(f"integer fields must use exact int values at {pointer}")
+        return
+    if schema_type != "number":
+        return
+    if type(expected) is not float:
+        raise ValueError(f"number fields must use exact float values at {pointer}")
 
 
 def build_retry_messages(
