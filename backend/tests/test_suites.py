@@ -363,6 +363,18 @@ def test_structured_schema_converts_nested_lists_enums_and_nullable_fields() -> 
     assert value.owner is None
 
 
+def test_structured_schema_rejects_unlisted_enum_value() -> None:
+    model = model_from_schema("StructuredOutput", STRUCTURED_SCHEMA)
+
+    with pytest.raises(ValidationError):
+        model.model_validate(
+            {
+                "release": {"version": 2, "tags": ["stable"]},
+                "status": "archived",
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("value", "expected_message"),
     [
