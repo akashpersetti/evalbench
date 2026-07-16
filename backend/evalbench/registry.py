@@ -1,6 +1,7 @@
 """Explicit suite registration without discovery or import side effects."""
 
 from evalbench.suites.base import Suite
+from evalbench.suites.latency_cost import LatencyCostSuite
 from evalbench.suites.structured import StructuredSuite
 
 
@@ -31,3 +32,4 @@ def list_suites() -> list[Suite]:
 
 
 register_suite(StructuredSuite())
+register_suite(LatencyCostSuite())
