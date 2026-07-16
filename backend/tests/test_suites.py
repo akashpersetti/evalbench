@@ -23,10 +23,15 @@ from evalbench.models import (
 )
 from evalbench.suites.base import Suite, Task
 from evalbench.suites.structured import (
+    StructuredSuite,
+    build_retry_messages,
     extract_json,
+    field_accuracy,
+    iter_expected_leaves,
     model_from_schema,
     validate_output,
 )
+from evalbench.runner import CallResult
 
 
 METRIC_RECORD_FIELDS = (
@@ -492,6 +497,295 @@ def test_structured_json_rejects_malformed_or_ambiguous_output(
 ) -> None:
     with pytest.raises(ValueError, match=expected_message):
         extract_json(raw_output)
+
+
+METRIC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["ready", "blocked"]},
+        "count": {"type": "integer"},
+        "approved": {"type": "boolean"},
+        "details": {
+            "type": "object",
+            "properties": {"labels": {"type": "array", "items": {"type": "string"}}},
+            "required": ["labels"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["status", "count", "approved", "details"],
+    "additionalProperties": False,
+}
+METRIC_EXPECTED = {
+    "status": "ready",
+    "count": 2,
+    "approved": True,
+    "details": {"labels": ["one", "two"]},
+}
+
+
+class FakeStructuredContext:
+    def __init__(
+        self,
+        results: list[CallResult],
+        initial_calls: list[CallResult] | None = None,
+    ) -> None:
+        self._results = list(results)
+        self.calls = list(initial_calls or [])
+        self.messages: list[list[dict]] = []
+
+    def complete(self, messages: list[dict]) -> CallResult:
+        self.messages.append(messages)
+        result = self._results.pop(0)
+        self.calls.append(result)
+        return result
+
+
+class FakeStructuredJudge:
+    def __init__(self, score: float = 0.0) -> None:
+        self.score = score
+        self.calls: list[dict[str, str]] = []
+
+    def score_free_text(
+        self, *, prompt: str, expected: str, actual: str, rubric: str
+    ) -> float:
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "expected": expected,
+                "actual": actual,
+                "rubric": rubric,
+            }
+        )
+        return self.score
+
+
+def structured_metric_task(
+    *,
+    expected: Any = METRIC_EXPECTED,
+    schema: dict[str, Any] = METRIC_SCHEMA,
+    free_text_fields: list[str] | None = None,
+) -> Task:
+    return Task(
+        id="structured-metric-1",
+        domain="software",
+        prompt="Return the requested synthetic record.",
+        payload={
+            "schema": schema,
+            "expected": expected,
+            "free_text_fields": free_text_fields or [],
+        },
+        requires_generation=False,
+    )
+
+
+def structured_call(text: str, cost_usd: float = 0.01) -> CallResult:
+    return CallResult(
+        text=text,
+        prompt_tokens=10,
+        completion_tokens=5,
+        cost_usd=cost_usd,
+        latency_ms=20.0,
+    )
+
+
+def test_structured_metrics_valid_first_attempt_are_exact_float_keys() -> None:
+    suite = StructuredSuite()
+    task = structured_metric_task()
+    judge = FakeStructuredJudge()
+
+    metrics = suite.evaluate(task, json.dumps(METRIC_EXPECTED), judge)
+
+    assert metrics == {
+        "first_attempt_valid": 1.0,
+        "schema_valid": 1.0,
+        "retries_to_valid": 0.0,
+        "retry_cost_usd": 0.0,
+        "field_accuracy": 1.0,
+    }
+    assert set(metrics) == set(suite.metric_keys)
+    assert all(isinstance(value, float) for value in metrics.values())
+    assert judge.calls == []
+
+
+def test_structured_retry_records_only_retry_cost_after_invalid_first_attempt() -> None:
+    suite = StructuredSuite()
+    task = structured_metric_task()
+    context = FakeStructuredContext(
+        [structured_call(json.dumps(METRIC_EXPECTED), 0.07)],
+        initial_calls=[structured_call("not JSON", 0.99)],
+    )
+    task._execution_context = context
+
+    metrics = suite.evaluate(task, "not JSON", FakeStructuredJudge())
+
+    assert metrics == {
+        "first_attempt_valid": 0.0,
+        "schema_valid": 1.0,
+        "retries_to_valid": 1.0,
+        "retry_cost_usd": 0.07,
+        "field_accuracy": 1.0,
+    }
+    assert [call.cost_usd for call in context.calls] == [0.99, 0.07]
+
+
+def test_structured_retry_succeeds_on_fourth_total_attempt() -> None:
+    suite = StructuredSuite()
+    task = structured_metric_task()
+    context = FakeStructuredContext(
+        [
+            structured_call("bad", 0.01),
+            structured_call("still bad", 0.02),
+            structured_call(json.dumps(METRIC_EXPECTED), 0.03),
+        ]
+    )
+    task._execution_context = context
+
+    metrics = suite.evaluate(task, "invalid", FakeStructuredJudge())
+
+    assert metrics["first_attempt_valid"] == 0.0
+    assert metrics["schema_valid"] == 1.0
+    assert metrics["retries_to_valid"] == 3.0
+    assert metrics["retry_cost_usd"] == pytest.approx(0.06)
+    assert len(context.calls) == 3
+
+
+def test_structured_retry_reports_failed_schema_after_four_invalid_attempts() -> None:
+    suite = StructuredSuite()
+    task = structured_metric_task()
+    context = FakeStructuredContext([structured_call("invalid") for _ in range(3)])
+    task._execution_context = context
+
+    metrics = suite.evaluate(task, "invalid", FakeStructuredJudge())
+
+    assert metrics["first_attempt_valid"] == 0.0
+    assert metrics["schema_valid"] == 0.0
+    assert metrics["retries_to_valid"] == 3.0
+    assert metrics["field_accuracy"] == 0.0
+
+
+def test_structured_accuracy_keeps_parseable_schema_invalid_output_for_partial_credit() -> None:
+    suite = StructuredSuite()
+    expected = {"present": 1, "missing": True}
+    schema = {
+        "type": "object",
+        "properties": {"present": {"type": "integer"}, "missing": {"type": "boolean"}},
+        "required": ["present", "missing"],
+        "additionalProperties": False,
+    }
+    task = structured_metric_task(expected=expected, schema=schema)
+    context = FakeStructuredContext([structured_call('{"present": 1}') for _ in range(3)])
+    task._execution_context = context
+
+    metrics = suite.evaluate(task, '{"present": 1}', FakeStructuredJudge())
+
+    assert metrics["schema_valid"] == 0.0
+    assert metrics["field_accuracy"] == 0.5
+
+
+def test_structured_refusal_stays_an_evaluation_output_for_the_runner_to_classify() -> None:
+    suite = StructuredSuite()
+    expected = {"answer": "I can't assist with that request."}
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    task = structured_metric_task(expected=expected, schema=schema)
+    raw_output = json.dumps(expected)
+
+    metrics = suite.evaluate(task, raw_output, FakeStructuredJudge())
+
+    assert metrics["schema_valid"] == 1.0
+    assert suite.detect_refusal(raw_output) is True
+
+
+def test_structured_field_accuracy_requires_exact_types_values_and_nested_list_leaves() -> None:
+    task = structured_metric_task()
+    judge = FakeStructuredJudge()
+
+    assert field_accuracy(task, METRIC_EXPECTED, judge) == 1.0
+    assert field_accuracy(
+        task,
+        {
+            "status": "blocked",
+            "count": True,
+            "approved": 1,
+            "details": {"labels": ["wrong", "wrong"]},
+        },
+        judge,
+    ) == 0.0
+    assert judge.calls == []
+
+
+def test_structured_field_accuracy_scores_absent_or_wrong_leaves_as_zero() -> None:
+    task = structured_metric_task(
+        expected={"left": 1, "right": 2},
+        schema={
+            "type": "object",
+            "properties": {"left": {"type": "integer"}, "right": {"type": "integer"}},
+            "required": ["left", "right"],
+            "additionalProperties": False,
+        },
+    )
+    judge = FakeStructuredJudge()
+
+    assert field_accuracy(task, {"left": 1}, judge) == 0.5
+    assert field_accuracy(task, {"left": "1", "right": 2}, judge) == 0.5
+
+
+def test_structured_field_accuracy_uses_judge_only_for_declared_free_text_leaves() -> None:
+    task = structured_metric_task(
+        expected={"summary": "Expected summary", "status": "ready"},
+        schema={
+            "type": "object",
+            "properties": {"summary": {"type": "string"}, "status": {"type": "string"}},
+            "required": ["summary", "status"],
+            "additionalProperties": False,
+        },
+        free_text_fields=["/summary"],
+    )
+    judge = FakeStructuredJudge(0.25)
+
+    score = field_accuracy(
+        task,
+        {"summary": "Equivalent wording", "status": "ready"},
+        judge,
+    )
+
+    assert score == 0.625
+    assert judge.calls == [
+        {
+            "prompt": task.prompt,
+            "expected": "Expected summary",
+            "actual": "Equivalent wording",
+            "rubric": "Semantic equivalence and factual completeness; ignore wording differences.",
+        }
+    ]
+
+
+def test_structured_leaf_pointers_escape_rfc_6901_tokens() -> None:
+    assert iter_expected_leaves({"a/b": {"c~d": [3]}}) == [("/a~1b/c~0d/0", 3)]
+
+
+def test_structured_prompts_include_canonical_schema_without_expected_values() -> None:
+    suite = StructuredSuite()
+    task = structured_metric_task(expected={"secret": "do not reveal"})
+
+    messages = suite.build_prompt(task)
+    retry_messages = build_retry_messages(messages, "invalid", "invalid JSON", METRIC_SCHEMA)
+
+    assert messages[0]["role"] == "system"
+    assert "only JSON" in messages[0]["content"]
+    assert json.dumps(METRIC_SCHEMA, sort_keys=True, separators=(",", ":")) in messages[1]["content"]
+    assert "do not reveal" not in "\n".join(message["content"] for message in messages)
+    assert retry_messages[:2] == messages
+    assert retry_messages[2] == {"role": "assistant", "content": "invalid"}
+    assert "invalid JSON" in retry_messages[3]["content"]
+    assert json.dumps(METRIC_SCHEMA, sort_keys=True, separators=(",", ":")) in retry_messages[3]["content"]
+    assert "do not reveal" not in "\n".join(
+        message["content"] for message in retry_messages
+    )
 
 
 class MissingEvaluateSuite(Suite):

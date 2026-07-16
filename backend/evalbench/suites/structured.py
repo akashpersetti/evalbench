@@ -8,12 +8,217 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 
+from evalbench.judge import Judge
+from evalbench.suites.base import Suite, Task
+
 
 _FENCED_JSON = re.compile(
     r"^\s*```json[ \t]*\r?\n(?P<content>.*?)\r?\n?```\s*$",
     re.DOTALL | re.IGNORECASE,
 )
 _MODEL_CONFIG = ConfigDict(strict=True, extra="forbid")
+_MISSING = object()
+_FREE_TEXT_RUBRIC = (
+    "Semantic equivalence and factual completeness; ignore wording differences."
+)
+
+
+class StructuredSuite(Suite):
+    """Evaluate schema adherence and exact structured-answer accuracy."""
+
+    name = "structured"
+    metric_keys = [
+        "first_attempt_valid",
+        "schema_valid",
+        "retries_to_valid",
+        "retry_cost_usd",
+        "field_accuracy",
+    ]
+    display_metrics = [
+        {
+            "key": "schema_valid",
+            "label": "Schema valid",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+        {
+            "key": "first_attempt_valid",
+            "label": "First-attempt valid",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+        {
+            "key": "field_accuracy",
+            "label": "Field accuracy",
+            "format": "percent",
+            "higher_is_better": True,
+        },
+        {
+            "key": "retries_to_valid",
+            "label": "Retries to valid",
+            "format": "number",
+            "higher_is_better": False,
+        },
+        {
+            "key": "retry_cost_usd",
+            "label": "Retry cost",
+            "format": "currency",
+            "higher_is_better": False,
+        },
+    ]
+
+    def load_tasks(self, domain: str) -> list[Task]:
+        """Return no tasks until the structured dataset is installed."""
+        return []
+
+    def build_prompt(self, task: Task) -> list[dict]:
+        schema = task.payload["schema"]
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Return only JSON conforming to the supplied schema, with no markdown."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"{task.prompt}\n\nSchema:\n{_canonical_schema(schema)}",
+            },
+        ]
+
+    def evaluate(
+        self, task: Task, raw_output: str, judge: Judge
+    ) -> dict[str, float]:
+        schema = task.payload["schema"]
+        parsed, schema_valid, validation_error = validate_output(raw_output, schema)
+        first_attempt_valid = schema_valid
+        latest_parsed = parsed
+        retries = 0
+        retry_cost_usd = 0.0
+        original_messages = self.build_prompt(task)
+
+        while not schema_valid and retries < 3:
+            context = task._execution_context
+            if context is None:
+                raise RuntimeError("structured retries require an execution context")
+            result = context.complete(
+                build_retry_messages(
+                    original_messages,
+                    raw_output,
+                    validation_error or "invalid output",
+                    schema,
+                )
+            )
+            retries += 1
+            retry_cost_usd += result.cost_usd
+            raw_output = result.text
+            parsed, schema_valid, validation_error = validate_output(raw_output, schema)
+            if parsed is not None:
+                latest_parsed = parsed
+
+        return {
+            "first_attempt_valid": float(first_attempt_valid),
+            "schema_valid": float(schema_valid),
+            "retries_to_valid": float(retries),
+            "retry_cost_usd": float(retry_cost_usd),
+            "field_accuracy": float(field_accuracy(task, latest_parsed, judge)),
+        }
+
+
+def build_retry_messages(
+    original_messages: list[dict],
+    invalid_output: str,
+    validation_error: str,
+    schema: dict[str, Any],
+) -> list[dict]:
+    """Append a correction turn without exposing the expected answer."""
+    return [
+        *original_messages,
+        {"role": "assistant", "content": invalid_output},
+        {
+            "role": "user",
+            "content": (
+                f"Your previous output was invalid: {validation_error}. "
+                "Return only JSON conforming to this schema, with no markdown.\n"
+                f"Schema:\n{_canonical_schema(schema)}"
+            ),
+        },
+    ]
+
+
+def iter_expected_leaves(expected: Any, pointer: str = "") -> list[tuple[str, Any]]:
+    """Flatten an expected value into RFC 6901-style leaf pointers."""
+    if isinstance(expected, dict):
+        return [
+            leaf
+            for key, value in expected.items()
+            for leaf in iter_expected_leaves(
+                value, f"{pointer}/{_escape_pointer_token(key)}"
+            )
+        ]
+    if isinstance(expected, list):
+        return [
+            leaf
+            for index, value in enumerate(expected)
+            for leaf in iter_expected_leaves(value, f"{pointer}/{index}")
+        ]
+    return [(pointer, expected)]
+
+
+def field_accuracy(task: Task, parsed: Any | None, judge: Judge) -> float:
+    """Score expected leaves exactly, delegating declared free-text leaves."""
+    leaves = iter_expected_leaves(task.payload["expected"])
+    if not leaves:
+        return 1.0
+    if parsed is None:
+        return 0.0
+
+    free_text_fields = set(task.payload.get("free_text_fields", []))
+    scores: list[float] = []
+    for pointer, expected in leaves:
+        actual = _value_at_pointer(parsed, pointer)
+        if actual is _MISSING or type(actual) is not type(expected):
+            scores.append(0.0)
+        elif pointer in free_text_fields:
+            scores.append(
+                float(
+                    judge.score_free_text(
+                        prompt=task.prompt,
+                        expected=str(expected),
+                        actual=str(actual),
+                        rubric=_FREE_TEXT_RUBRIC,
+                    )
+                )
+            )
+        else:
+            scores.append(float(actual == expected))
+    return sum(scores) / len(scores)
+
+
+def _canonical_schema(schema: dict[str, Any]) -> str:
+    return json.dumps(schema, sort_keys=True, separators=(",", ":"))
+
+
+def _escape_pointer_token(token: str) -> str:
+    return token.replace("~", "~0").replace("/", "~1")
+
+
+def _value_at_pointer(value: Any, pointer: str) -> Any:
+    if pointer == "":
+        return value
+    current = value
+    for token in pointer.removeprefix("/").split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            current = current.get(token, _MISSING)
+        elif isinstance(current, list) and token.isdecimal():
+            index = int(token)
+            current = current[index] if index < len(current) else _MISSING
+        else:
+            return _MISSING
+        if current is _MISSING:
+            return _MISSING
+    return current
 
 
 def annotation_from_schema(name: str, schema: dict[str, Any]) -> Any:
