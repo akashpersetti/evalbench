@@ -631,6 +631,26 @@ class FakeSuite(Suite):
         }
 
 
+class DetectorFailingFakeSuite(FakeSuite):
+    def __init__(self) -> None:
+        super().__init__()
+        self.detector_outputs: list[str] = []
+
+    def evaluate(
+        self, task: Task, raw_output: str, judge: judge_module.Judge
+    ) -> dict[str, float]:
+        metrics = super().evaluate(task, raw_output, judge)
+        if task.id == "fake-software-1":
+            return {"score": metrics["score"]}
+        return metrics
+
+    def detect_refusal(self, raw_output: str) -> bool:
+        self.detector_outputs.append(raw_output)
+        if raw_output:
+            raise RuntimeError("synthetic detector failure secret-981b")
+        return False
+
+
 class BoundedFakeCompletion:
     def __init__(self, cap: int = 2) -> None:
         self.cap = cap
@@ -822,6 +842,141 @@ async def test_execute_run_records_persists_and_continues_with_bounded_concurren
         "synthetic timeout output 524a",
     ):
         assert secret not in progress
+
+
+async def test_refusal_detector_failure_becomes_one_record_and_run_continues(
+    monkeypatch, tmp_path: Path
+) -> None:
+    suite = DetectorFailingFakeSuite()
+    completion = BoundedFakeCompletion(cap=1)
+    database_path = (tmp_path / "detector-failure.db").resolve()
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    factory = create_session_factory(engine)
+    await init_db(engine)
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        litellm_timeout_seconds=4.0,
+        max_concurrency=1,
+    )
+    config = RunConfig(
+        suite="fake",
+        domain="overall",
+        models=["anthropic/claude-sonnet-4-5"],
+    )
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(registry_module, "SUITES", {})
+            registry_module.register_suite(suite)
+            scoped.setattr(runner_module, "get_settings", lambda: settings)
+            result = await runner_module.execute_run(
+                config,
+                session_factory=factory,
+                completion_fn=completion,
+                embedding_fn=lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("unexpected embedding call")
+                ),
+            )
+        persisted = await get_run_records(factory, result.run_id)
+    finally:
+        await engine.dispose()
+
+    failing, remaining = result.records
+    assert failing.error == "RuntimeError"
+    assert failing.refused is False
+    assert failing.metrics == {"score": 0.25, "output_length": 0.0}
+    assert failing.prompt_tokens == 12
+    assert failing.completion_tokens == 5
+    assert failing.cost_usd == pytest.approx(
+        calculate_cost_usd("anthropic/claude-sonnet-4-5", 12, 5)
+    )
+    assert remaining.error is None
+    assert remaining.task_id == "fake-finance-2"
+    assert len(suite.detector_outputs) == 2
+    assert sum(bool(output) for output in suite.detector_outputs) == 1
+    assert {record.id for record in persisted} == {
+        record.id for record in result.records
+    }
+    assert len(persisted) == 2
+
+
+async def test_execute_run_deduplicates_models_in_first_occurrence_order(
+    monkeypatch, tmp_path: Path
+) -> None:
+    suite = FakeSuite()
+    completion_calls: list[tuple[str, str]] = []
+
+    def completion(**kwargs: Any) -> SimpleNamespace:
+        content = kwargs["messages"][0]["content"]
+        completion_calls.append((kwargs["model"], content))
+        output = (
+            f"answer model={kwargs['model']}"
+            if content.startswith("target:")
+            else "synthetic extra output"
+        )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=output))],
+            usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
+        )
+
+    database_path = (tmp_path / "duplicate-models.db").resolve()
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    factory = create_session_factory(engine)
+    await init_db(engine)
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        litellm_timeout_seconds=4.0,
+        max_concurrency=2,
+    )
+    config = RunConfig(
+        suite="fake",
+        domain="overall",
+        models=[
+            "anthropic/claude-sonnet-4-5",
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4-5",
+        ],
+    )
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(registry_module, "SUITES", {})
+            registry_module.register_suite(suite)
+            scoped.setattr(runner_module, "get_settings", lambda: settings)
+            result = await runner_module.execute_run(
+                config,
+                session_factory=factory,
+                completion_fn=completion,
+                embedding_fn=lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("unexpected embedding call")
+                ),
+            )
+        persisted = await get_run_records(factory, result.run_id)
+    finally:
+        await engine.dispose()
+
+    expected_pairs = [
+        ("fake-software-1", "anthropic/claude-sonnet-4-5"),
+        ("fake-software-1", "openai/gpt-4o"),
+        ("fake-finance-2", "anthropic/claude-sonnet-4-5"),
+        ("fake-finance-2", "openai/gpt-4o"),
+    ]
+    returned_pairs = [
+        (record.task_id, record.model) for record in result.records
+    ]
+    assert returned_pairs == expected_pairs
+    assert len(returned_pairs) == len(set(returned_pairs))
+    persisted_pairs = [
+        (record.task_id, record.model) for record in persisted
+    ]
+    assert set(persisted_pairs) == set(expected_pairs)
+    assert len(persisted_pairs) == len(set(persisted_pairs))
+    assert len(completion_calls) == 6
+    assert config.models == [
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-4o",
+        "anthropic/claude-sonnet-4-5",
+    ]
 
 
 def test_successful_execution_preserves_omitted_declared_metrics() -> None:

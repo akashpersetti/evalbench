@@ -219,18 +219,23 @@ def _execute_one_sync(
     task._execution_context = context
 
     try:
-        if task.requires_generation:
-            raw_output = context.complete(suite.build_prompt(task)).text
-        judge = Judge(
-            judge_model,
-            completion_fn=context._metered_completion,
-            timeout_seconds=timeout_seconds,
-        )
-        metrics = suite.evaluate(task, raw_output, judge)
-        refused = suite.detect_refusal(raw_output)
-    except Exception as exc:
-        error = type(exc).__name__
-        refused = suite.detect_refusal(raw_output)
+        try:
+            if task.requires_generation:
+                raw_output = context.complete(suite.build_prompt(task)).text
+            judge = Judge(
+                judge_model,
+                completion_fn=context._metered_completion,
+                timeout_seconds=timeout_seconds,
+            )
+            metrics = suite.evaluate(task, raw_output, judge)
+        except Exception as exc:
+            error = type(exc).__name__
+
+        try:
+            refused = suite.detect_refusal(raw_output)
+        except Exception as exc:
+            error = type(exc).__name__
+            refused = False
     finally:
         task._execution_context = None
 
@@ -286,10 +291,11 @@ async def execute_run(
         await init_db(engine)
         session_factory = create_session_factory(engine)
 
+    models = list(dict.fromkeys(config.models))
     work_items = [
         (index, task, model)
         for index, (task, model) in enumerate(
-            (task, model) for task in tasks for model in config.models
+            (task, model) for task in tasks for model in models
         )
     ]
     semaphore = asyncio.Semaphore(settings.max_concurrency)
