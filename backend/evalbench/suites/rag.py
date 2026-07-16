@@ -346,7 +346,13 @@ def _unique_document_ids(ranked_chunks: Sequence[Chunk]) -> list[str]:
 
 
 def _clamp_metric(value: float) -> float:
-    """Keep metric round-off within its mathematically valid unit interval."""
+    """Clamp tiny round-off while rejecting materially invalid metrics."""
+    tolerance = 1e-12
+    if not math.isfinite(value) or value < -tolerance or value > 1.0 + tolerance:
+        raise ValueError(
+            "metric value must be within [0, 1] up to floating-point noise; "
+            f"received {value!r}"
+        )
     return float(min(1.0, max(0.0, value)))
 
 
