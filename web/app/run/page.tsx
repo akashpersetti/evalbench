@@ -70,6 +70,7 @@ export default function RunPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [records, setRecords] = useState<MetricRecord[] | null>(null);
+  const [statusPollStale, setStatusPollStale] = useState(false);
 
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [batchDomains, setBatchDomains] = useState<Set<ConcreteDomain>>(
@@ -80,6 +81,7 @@ export default function RunPage() {
   >({});
   const [batchSubmitError, setBatchSubmitError] = useState("");
   const [batchRows, setBatchRows] = useState<BatchRow[]>([]);
+  const [batchPollStale, setBatchPollStale] = useState(false);
 
   useEffect(() => {
     if (authInitialized.current) return;
@@ -140,8 +142,11 @@ export default function RunPage() {
 
     const interval = setInterval(() => {
       fetchRunStatus(runId)
-        .then(setStatus)
-        .catch(() => undefined);
+        .then((next) => {
+          setStatus(next);
+          setStatusPollStale(false);
+        })
+        .catch(() => setStatusPollStale(true));
     }, 3000);
 
     return () => clearInterval(interval);
@@ -155,13 +160,19 @@ export default function RunPage() {
     if (allSettled) return;
 
     const interval = setInterval(() => {
-      Promise.all(batchRows.map((row) => fetchRunStatus(row.run_id)))
-        .then((results) => {
+      Promise.allSettled(batchRows.map((row) => fetchRunStatus(row.run_id))).then(
+        (results) => {
           setBatchRows((current) =>
-            current.map((row, index) => ({ ...row, status: results[index] })),
+            current.map((row, index) => {
+              const result = results[index];
+              return result.status === "fulfilled"
+                ? { ...row, status: result.value }
+                : row;
+            }),
           );
-        })
-        .catch(() => undefined);
+          setBatchPollStale(results.some((result) => result.status === "rejected"));
+        },
+      );
     }, 3000);
 
     return () => clearInterval(interval);
@@ -223,6 +234,7 @@ export default function RunPage() {
         setRunId(newRunId);
         setStatus({ run_id: newRunId, status: "pending", completed: 0, total: 0 });
         setRecords(null);
+        setStatusPollStale(false);
       } catch (reason) {
         setSubmitError(errorMessage(reason));
       }
@@ -267,6 +279,7 @@ export default function RunPage() {
 
       try {
         const entries = await startBatch(request, token);
+        setBatchPollStale(false);
         setBatchRows(
           entries.map((entry) => ({
             ...entry,
@@ -565,6 +578,11 @@ export default function RunPage() {
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#777970]">
               Batch status
             </p>
+            {batchPollStale && (
+              <p className="mt-1 text-sm text-[#bd6b65]">
+                Connection issue on last poll — retrying…
+              </p>
+            )}
             <ul className="mt-3 space-y-1 font-mono text-sm">
               {batchRows.map((row) => {
                 const rowStatus = row.status;
@@ -600,10 +618,17 @@ export default function RunPage() {
                 Run complete — {status.total} records.
               </p>
             ) : (
-              <p className="mt-2 text-sm text-[#62675f]">
-                {status.status === "pending" ? "Starting…" : "Running…"}{" "}
-                {status.completed} of {status.total || "?"} complete.
-              </p>
+              <>
+                <p className="mt-2 text-sm text-[#62675f]">
+                  {status.status === "pending" ? "Starting…" : "Running…"}{" "}
+                  {status.completed} of {status.total || "?"} complete.
+                </p>
+                {statusPollStale && (
+                  <p className="mt-1 text-sm text-[#bd6b65]">
+                    Connection issue — retrying…
+                  </p>
+                )}
+              </>
             )}
           </section>
         )}
