@@ -375,13 +375,18 @@ class ExecutionContext:
         model: str,
         messages: list[dict],
         timeout_seconds: float,
+        response_format: dict[str, str] | None = None,
     ) -> tuple[Any, CallResult]:
         started_at = time.perf_counter()
+        extra: dict[str, Any] = {}
+        if response_format is not None:
+            extra["response_format"] = response_format
         try:
             response = self._completion_fn(
                 model=model,
                 messages=messages,
                 timeout=timeout_seconds,
+                **extra,
             )
         except Exception:
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
@@ -425,12 +430,18 @@ class ExecutionContext:
         return response, result
 
     def _metered_completion(
-        self, *, model: str, messages: list[dict], timeout: float
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        timeout: float,
+        response_format: dict[str, str] | None = None,
     ) -> Any:
         response, _ = self._complete_with_model(
             model=model,
             messages=messages,
             timeout_seconds=timeout,
+            response_format=response_format,
         )
         return response
 

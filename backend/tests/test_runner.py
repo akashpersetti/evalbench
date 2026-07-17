@@ -721,6 +721,59 @@ def test_judge_parses_unfenced_and_single_json_fence() -> None:
     assert judge.complete_json([]) == {"kind": "fenced"}
 
 
+def test_complete_json_requests_json_object_response_format_when_supported(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        judge_module.litellm,
+        "get_supported_openai_params",
+        lambda model: ["response_format", "temperature"],
+    )
+    completion = FakeCompletion('{"winner": "A"}')
+    judge = judge_module.Judge(
+        "some/model", completion_fn=completion, timeout_seconds=3.0
+    )
+
+    judge.complete_json([])
+
+    assert completion.calls[0]["response_format"] == {"type": "json_object"}
+
+
+def test_complete_json_omits_response_format_when_unsupported(monkeypatch) -> None:
+    monkeypatch.setattr(
+        judge_module.litellm,
+        "get_supported_openai_params",
+        lambda model: ["temperature"],
+    )
+    completion = FakeCompletion('{"winner": "A"}')
+    judge = judge_module.Judge(
+        "some/model", completion_fn=completion, timeout_seconds=3.0
+    )
+
+    judge.complete_json([])
+
+    assert "response_format" not in completion.calls[0]
+
+
+def test_complete_json_omits_response_format_when_litellm_lookup_raises(
+    monkeypatch,
+) -> None:
+    def raise_lookup(model: str) -> list[str]:
+        raise ValueError("unknown model")
+
+    monkeypatch.setattr(
+        judge_module.litellm, "get_supported_openai_params", raise_lookup
+    )
+    completion = FakeCompletion('{"winner": "A"}')
+    judge = judge_module.Judge(
+        "some/unrecognized-model", completion_fn=completion, timeout_seconds=3.0
+    )
+
+    judge.complete_json([])
+
+    assert "response_format" not in completion.calls[0]
+
+
 @pytest.mark.parametrize("content", ["not json", "[]", '{"missing": true'])
 def test_judge_malformed_json_raises_named_error(content: str) -> None:
     completion = FakeCompletion(content)

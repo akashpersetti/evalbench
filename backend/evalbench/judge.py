@@ -42,18 +42,42 @@ class Judge:
         )
         self.rng = rng if rng is not None else random.Random()
 
-    def complete_text(self, messages: list[dict]) -> str:
+    def complete_text(
+        self,
+        messages: list[dict],
+        *,
+        response_format: dict[str, str] | None = None,
+    ) -> str:
+        kwargs: dict[str, Any] = {}
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         response = self._completion_fn(
             model=self.model,
             messages=messages,
             timeout=self.timeout_seconds,
+            **kwargs,
         )
         choices = getattr(response, "choices", [])
         message = getattr(choices[0], "message", None)
         return str(getattr(message, "content", "") or "")
 
+    def _json_response_format(self) -> dict[str, str] | None:
+        """Request provider-enforced JSON output where litellm reports support.
+
+        Falls back to None (relying on prompt instructions plus the fence
+        stripping below) for models litellm doesn't recognize or that don't
+        support response_format - avoids hard-failing on an unusual judge_model.
+        """
+        try:
+            supported = litellm.get_supported_openai_params(model=self.model) or []
+        except Exception:
+            return None
+        return {"type": "json_object"} if "response_format" in supported else None
+
     def complete_json(self, messages: list[dict]) -> dict[str, Any]:
-        text = self.complete_text(messages).strip()
+        text = self.complete_text(
+            messages, response_format=self._json_response_format()
+        ).strip()
         fenced = _JSON_FENCE.fullmatch(text)
         if fenced is not None:
             text = fenced.group("body").strip()
