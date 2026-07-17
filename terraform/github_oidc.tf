@@ -23,7 +23,11 @@ resource "aws_iam_role" "github_deploy" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+          # GitHub's actual sub claim embeds the immutable numeric owner/repo
+          # IDs alongside the names: "repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:..."
+          # not the plain "repo:OWNER/REPO:..." form most docs show. A
+          # condition on the plain-name form never matches.
+          "token.actions.githubusercontent.com:sub" = "repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:*"
         }
       }
     }]
