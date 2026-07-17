@@ -246,3 +246,134 @@ export async function fetchResults(
 
   return payload;
 }
+
+export type RunRequest = {
+  suite: string;
+  domain: Domain;
+  models: string[];
+  judgeModel?: string;
+};
+
+export type RunStatus = {
+  run_id: string;
+  status: "pending" | "running" | "done" | "error";
+  completed: number;
+  total: number;
+  error?: string;
+};
+
+export type MetricRecord = {
+  id: string;
+  run_id: string;
+  suite: string;
+  domain: string;
+  model: string;
+  provider: string;
+  model_family: string;
+  task_id: string;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+  error: string | null;
+  refused: boolean;
+  metrics: Record<string, number>;
+  created_at: string;
+};
+
+function isRunStatus(value: unknown): value is RunStatus {
+  return (
+    isRecord(value) &&
+    typeof value.run_id === "string" &&
+    (value.status === "pending" ||
+      value.status === "running" ||
+      value.status === "done" ||
+      value.status === "error") &&
+    isFiniteNumber(value.completed) &&
+    isFiniteNumber(value.total)
+  );
+}
+
+async function postJson(
+  path: string,
+  body: unknown,
+  headers?: Record<string, string>,
+): Promise<unknown> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new ApiError(500, "Malformed API response");
+  }
+}
+
+export async function requestMagicLink(email: string): Promise<void> {
+  await postJson("/api/auth/request", { email });
+}
+
+export async function verifyMagicLink(token: string): Promise<string> {
+  const payload = await fetchJson(
+    `/api/auth/verify?token=${encodeURIComponent(token)}`,
+  );
+
+  if (
+    !isRecord(payload) ||
+    typeof payload.admin_token !== "string" ||
+    !payload.admin_token
+  ) {
+    throw new ApiError(500, "Magic-link response did not include an admin token");
+  }
+
+  return payload.admin_token;
+}
+
+export async function startRun(
+  config: RunRequest,
+  adminToken: string,
+): Promise<string> {
+  const payload = await postJson(
+    "/runs/async",
+    {
+      suite: config.suite,
+      domain: config.domain,
+      models: config.models,
+      ...(config.judgeModel ? { judge_model: config.judgeModel } : {}),
+    },
+    { Authorization: `Bearer ${adminToken}` },
+  );
+
+  if (!isRecord(payload) || typeof payload.run_id !== "string") {
+    throw new ApiError(500, "Malformed API response");
+  }
+
+  return payload.run_id;
+}
+
+export async function fetchRunStatus(runId: string): Promise<RunStatus> {
+  const payload = await fetchJson(`/runs/${encodeURIComponent(runId)}/status`);
+
+  if (!isRunStatus(payload)) {
+    throw new ApiError(500, "Malformed API response");
+  }
+
+  return payload;
+}
+
+export async function fetchRun(runId: string): Promise<MetricRecord[]> {
+  const payload = await fetchJson(`/runs/${encodeURIComponent(runId)}`);
+
+  if (!Array.isArray(payload)) {
+    throw new ApiError(500, "Malformed API response");
+  }
+
+  return payload as MetricRecord[];
+}

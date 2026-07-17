@@ -13,3 +13,6 @@ env/
 .pytest_cache/
 web/node_modules/
 web/.next/
+
+backend/lambda-package/
+backend/lambda-deployment.zip
