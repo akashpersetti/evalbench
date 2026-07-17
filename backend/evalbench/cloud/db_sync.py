@@ -65,6 +65,7 @@ def merge_all_runs(bucket: str, prefix: str, local_path: Path) -> None:
                 connection.execute(
                     "INSERT INTO metric_records SELECT * FROM shard.metric_records"
                 )
+                connection.commit()
                 connection.execute("DETACH DATABASE shard")
             connection.commit()
         finally:
