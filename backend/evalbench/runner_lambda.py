@@ -19,6 +19,7 @@ def handler(event: dict[str, Any], _context: object) -> dict[str, str]:
 
 
 async def _run(run_id: str, config: RunConfig) -> dict[str, str]:
+    _LOCAL_DB_PATH.unlink(missing_ok=True)
     settings = get_settings()
     run_status.set_running(settings.dynamodb_run_status_table, run_id)
 
