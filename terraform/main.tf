@@ -366,20 +366,20 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      REQUIRE_AUTH                 = "true"
-      OWNER_EMAIL                  = "ahadagal@iu.edu"
-      DYNAMODB_MAGIC_TOKENS_TABLE  = aws_dynamodb_table.magic_tokens.name
-      DYNAMODB_RUN_STATUS_TABLE    = aws_dynamodb_table.run_status.name
-      S3_DB_BUCKET                 = aws_s3_bucket.db.id
-      S3_DB_KEY                    = "evalbench.db"
-      SSM_ADMIN_TOKEN_PARAM        = data.aws_ssm_parameter.admin_token.name
-      SSM_OPENAI_API_KEY_PARAM     = data.aws_ssm_parameter.openai_api_key.name
-      SSM_ANTHROPIC_API_KEY_PARAM  = data.aws_ssm_parameter.anthropic_api_key.name
-      SSM_GEMINI_API_KEY_PARAM     = data.aws_ssm_parameter.gemini_api_key.name
-      SSM_OPENROUTER_API_KEY_PARAM = data.aws_ssm_parameter.openrouter_api_key.name
-      SSM_XAI_API_KEY_PARAM        = data.aws_ssm_parameter.xai_api_key.name
-      SSM_JUDGE_MODEL_PARAM        = data.aws_ssm_parameter.judge_model.name
-      RUNNER_LAMBDA_ARN            = aws_lambda_function.runner.arn
+      REQUIRE_AUTH                = "true"
+      OWNER_EMAIL                 = "ahadagal@alumni.iu.edu"
+      DYNAMODB_MAGIC_TOKENS_TABLE = aws_dynamodb_table.magic_tokens.name
+      DYNAMODB_RUN_STATUS_TABLE   = aws_dynamodb_table.run_status.name
+      S3_DB_BUCKET                = aws_s3_bucket.db.id
+      S3_DB_KEY                   = "evalbench.db"
+      ADMIN_TOKEN                 = data.aws_ssm_parameter.admin_token.value
+      OPENAI_API_KEY              = data.aws_ssm_parameter.openai_api_key.value
+      ANTHROPIC_API_KEY           = data.aws_ssm_parameter.anthropic_api_key.value
+      GEMINI_API_KEY              = data.aws_ssm_parameter.gemini_api_key.value
+      OPENROUTER_API_KEY          = data.aws_ssm_parameter.openrouter_api_key.value
+      XAI_API_KEY                 = data.aws_ssm_parameter.xai_api_key.value
+      JUDGE_MODEL                 = data.aws_ssm_parameter.judge_model.value
+      RUNNER_LAMBDA_FUNCTION      = aws_lambda_function.runner.function_name
     }
   }
 
@@ -410,15 +410,15 @@ resource "aws_lambda_function" "runner" {
 
   environment {
     variables = {
-      DYNAMODB_RUN_STATUS_TABLE    = aws_dynamodb_table.run_status.name
-      S3_DB_BUCKET                 = aws_s3_bucket.db.id
-      S3_DB_KEY                    = "evalbench.db"
-      SSM_OPENAI_API_KEY_PARAM     = data.aws_ssm_parameter.openai_api_key.name
-      SSM_ANTHROPIC_API_KEY_PARAM  = data.aws_ssm_parameter.anthropic_api_key.name
-      SSM_GEMINI_API_KEY_PARAM     = data.aws_ssm_parameter.gemini_api_key.name
-      SSM_OPENROUTER_API_KEY_PARAM = data.aws_ssm_parameter.openrouter_api_key.name
-      SSM_XAI_API_KEY_PARAM        = data.aws_ssm_parameter.xai_api_key.name
-      SSM_JUDGE_MODEL_PARAM        = data.aws_ssm_parameter.judge_model.name
+      DYNAMODB_RUN_STATUS_TABLE = aws_dynamodb_table.run_status.name
+      S3_DB_BUCKET              = aws_s3_bucket.db.id
+      S3_DB_KEY                 = "evalbench.db"
+      OPENAI_API_KEY            = data.aws_ssm_parameter.openai_api_key.value
+      ANTHROPIC_API_KEY         = data.aws_ssm_parameter.anthropic_api_key.value
+      GEMINI_API_KEY            = data.aws_ssm_parameter.gemini_api_key.value
+      OPENROUTER_API_KEY        = data.aws_ssm_parameter.openrouter_api_key.value
+      XAI_API_KEY               = data.aws_ssm_parameter.xai_api_key.value
+      JUDGE_MODEL               = data.aws_ssm_parameter.judge_model.value
     }
   }
 
