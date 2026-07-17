@@ -2273,6 +2273,9 @@ async def api_client(tmp_path, monkeypatch):
     api_module.app.dependency_overrides[api_module.get_session_factory] = (
         lambda: factory
     )
+    api_module.app.dependency_overrides[api_module.get_run_session_factory] = (
+        lambda run_id: factory
+    )
     api_module.app.dependency_overrides[api_module.get_run_executor] = (
         lambda: reject_real_run
     )

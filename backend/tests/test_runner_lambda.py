@@ -34,23 +34,18 @@ def _make_record(run_id: str) -> MetricRecord:
     )
 
 
-def test_handler_runs_downloads_uploads_and_marks_done(
+def test_handler_runs_uploads_per_run_shard_and_marks_done(
     monkeypatch, tmp_path
 ) -> None:
     settings = Settings(
         s3_db_bucket="evalbench-dev-db",
-        s3_db_key="evalbench.db",
+        s3_db_prefix="runs/",
         dynamodb_run_status_table="evalbench-dev-run-status",
     )
     monkeypatch.setattr(runner_lambda_module, "get_settings", lambda: settings)
     monkeypatch.setattr(runner_lambda_module, "_LOCAL_DB_PATH", tmp_path / "run.db")
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        runner_lambda_module.db_sync,
-        "download_db",
-        lambda bucket, key, path: calls.append(f"download:{bucket}/{key}"),
-    )
     monkeypatch.setattr(
         runner_lambda_module.db_sync,
         "upload_db",
@@ -92,10 +87,9 @@ def test_handler_runs_downloads_uploads_and_marks_done(
 
     assert result == {"run_id": "run-abc"}
     assert calls == [
-        "download:evalbench-dev-db/evalbench.db",
         "running:run-abc",
         "progress:run-abc",
-        "upload:evalbench-dev-db/evalbench.db",
+        "upload:evalbench-dev-db/runs/run-abc.db",
         "done:run-abc",
     ]
 
@@ -103,12 +97,11 @@ def test_handler_runs_downloads_uploads_and_marks_done(
 def test_handler_marks_error_and_reraises_on_failure(monkeypatch, tmp_path) -> None:
     settings = Settings(
         s3_db_bucket="evalbench-dev-db",
-        s3_db_key="evalbench.db",
+        s3_db_prefix="runs/",
         dynamodb_run_status_table="evalbench-dev-run-status",
     )
     monkeypatch.setattr(runner_lambda_module, "get_settings", lambda: settings)
     monkeypatch.setattr(runner_lambda_module, "_LOCAL_DB_PATH", tmp_path / "run.db")
-    monkeypatch.setattr(runner_lambda_module.db_sync, "download_db", lambda *a: None)
     monkeypatch.setattr(runner_lambda_module.db_sync, "upload_db", lambda *a: None)
     monkeypatch.setattr(runner_lambda_module.run_status, "set_running", lambda *a: None)
 
