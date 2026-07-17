@@ -356,13 +356,14 @@ resource "aws_iam_role_policy" "runner_lambda_dynamodb" {
 
 # API Lambda function
 resource "aws_lambda_function" "api" {
-  filename      = "api_lambda.zip"
-  function_name = "evalbench-api"
-  role          = aws_iam_role.api_lambda_role.arn
-  handler       = "evalbench.lambda_handler.handler"
-  runtime       = "python3.12"
-  timeout       = 29
-  memory_size   = 512
+  filename         = "${path.module}/../backend/lambda-deployment.zip"
+  source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
+  function_name    = "evalbench-api"
+  role             = aws_iam_role.api_lambda_role.arn
+  handler          = "evalbench.lambda_handler.handler"
+  runtime          = "python3.12"
+  timeout          = 29
+  memory_size      = 512
 
   environment {
     variables = {
@@ -400,13 +401,14 @@ resource "aws_lambda_function" "api" {
 
 # Runner Lambda function
 resource "aws_lambda_function" "runner" {
-  filename      = "runner_lambda.zip"
-  function_name = "evalbench-runner"
-  role          = aws_iam_role.runner_lambda_role.arn
-  handler       = "evalbench.runner_lambda.handler"
-  runtime       = "python3.12"
-  timeout       = 900
-  memory_size   = 1024
+  filename         = "${path.module}/../backend/lambda-deployment.zip"
+  source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
+  function_name    = "evalbench-runner"
+  role             = aws_iam_role.runner_lambda_role.arn
+  handler          = "evalbench.runner_lambda.handler"
+  runtime          = "python3.12"
+  timeout          = 900
+  memory_size      = 1024
 
   environment {
     variables = {

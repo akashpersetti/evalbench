@@ -3,6 +3,11 @@ output "cloudfront_domain_name" {
   value       = aws_cloudfront_distribution.main.domain_name
 }
 
+output "frontend_url" {
+  description = "Full HTTPS URL of the deployed frontend"
+  value       = "https://${aws_cloudfront_distribution.main.domain_name}"
+}
+
 output "cloudfront_distribution_id" {
   description = "CloudFront distribution ID for cache invalidation"
   value       = aws_cloudfront_distribution.main.id

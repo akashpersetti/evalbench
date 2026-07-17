@@ -12,7 +12,12 @@ mode that shipped undetected.
 import re
 from pathlib import Path
 
-MAIN_TF = Path(__file__).parent.parent.parent / "terraform" / "main.tf"
+TERRAFORM_DIR = Path(__file__).parent.parent.parent / "terraform"
+MAIN_TF = TERRAFORM_DIR / "main.tf"
+OUTPUTS_TF = TERRAFORM_DIR / "outputs.tf"
+DEPLOY_WORKFLOW = (
+    Path(__file__).parent.parent.parent / ".github" / "workflows" / "deploy.yml"
+)
 
 REQUIRED_ENV_VAR_NAMES = {
     "REQUIRE_AUTH",
@@ -71,4 +76,41 @@ def test_main_tf_owner_email_matches_confirmed_address() -> None:
     assert content.count('"ahadagal@alumni.iu.edu"') >= 2, (
         "expected ahadagal@alumni.iu.edu on both the SES identity and the "
         "api Lambda's OWNER_EMAIL env var"
+    )
+
+
+def test_main_tf_lambda_functions_reference_the_shared_deploy_zip() -> None:
+    """backend/deploy.py builds exactly one zip: backend/lambda-deployment.zip.
+
+    A previous version had the api/runner Lambda resources point at
+    api_lambda.zip/runner_lambda.zip, filenames nothing in the repo ever
+    produces — terraform apply would fail with a file-not-found error before
+    ever reaching AWS.
+    """
+    content = MAIN_TF.read_text()
+
+    assert content.count("backend/lambda-deployment.zip") >= 2, (
+        "expected both aws_lambda_function.api and aws_lambda_function.runner "
+        "to reference ${path.module}/../backend/lambda-deployment.zip — the "
+        "single zip backend/deploy.py actually builds"
+    )
+    assert "api_lambda.zip" not in content
+    assert "runner_lambda.zip" not in content
+
+
+def test_deploy_workflow_output_names_exist_in_outputs_tf() -> None:
+    """Every `terraform output -raw <name>` in CI must name a real output."""
+    outputs_content = OUTPUTS_TF.read_text()
+    defined_outputs = set(re.findall(r'output "(\w+)"', outputs_content))
+
+    workflow_content = DEPLOY_WORKFLOW.read_text()
+    referenced_outputs = set(
+        re.findall(r"terraform output -raw (\w+)", workflow_content)
+    )
+
+    missing = referenced_outputs - defined_outputs
+    assert not missing, (
+        f"deploy.yml references terraform output(s) {missing} that aren't "
+        f"defined in outputs.tf (defined: {sorted(defined_outputs)}) — the "
+        "'Set frontend build outputs' CI step would fail"
     )
