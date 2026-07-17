@@ -1,0 +1,66 @@
+name: Deploy EvalBench
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build Lambda deployment package
+        run: uv run python backend/deploy.py
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve -var-file=dev.tfvars
+
+      - name: Set frontend build outputs
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          echo "api_url=$(terraform output -raw api_url)" >> "$GITHUB_OUTPUT"
+          echo "frontend_bucket=$(terraform output -raw frontend_bucket)" >> "$GITHUB_OUTPUT"
+          echo "distribution_id=$(terraform output -raw cloudfront_distribution_id)" >> "$GITHUB_OUTPUT"
+          echo "frontend_url=$(terraform output -raw frontend_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        env:
+          NEXT_PUBLIC_API_BASE_URL: ${{ steps.tf_outputs.outputs.api_url }}
+        run: npm run build
+
+      - name: Sync frontend to S3
+        run: aws s3 sync web/out "s3://${{ steps.tf_outputs.outputs.frontend_bucket }}" --delete
+
+      - name: Invalidate CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${{ steps.tf_outputs.outputs.distribution_id }}" --paths "/*"
+
+      - name: Print deployment summary
+        run: echo "Deployed to ${{ steps.tf_outputs.outputs.frontend_url }}"
