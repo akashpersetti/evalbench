@@ -400,7 +400,7 @@ resource "aws_lambda_function" "api" {
       DYNAMODB_MAGIC_TOKENS_TABLE = aws_dynamodb_table.magic_tokens.name
       DYNAMODB_RUN_STATUS_TABLE   = aws_dynamodb_table.run_status.name
       S3_DB_BUCKET                = aws_s3_bucket.db.id
-      S3_DB_KEY                   = "evalbench.db"
+      S3_DB_PREFIX                = "runs/"
       ADMIN_TOKEN                 = data.aws_ssm_parameter.admin_token.value
       OPENAI_API_KEY              = data.aws_ssm_parameter.openai_api_key.value
       ANTHROPIC_API_KEY           = data.aws_ssm_parameter.anthropic_api_key.value
@@ -445,7 +445,7 @@ resource "aws_lambda_function" "runner" {
     variables = {
       DYNAMODB_RUN_STATUS_TABLE = aws_dynamodb_table.run_status.name
       S3_DB_BUCKET              = aws_s3_bucket.db.id
-      S3_DB_KEY                 = "evalbench.db"
+      S3_DB_PREFIX              = "runs/"
       OPENAI_API_KEY            = data.aws_ssm_parameter.openai_api_key.value
       ANTHROPIC_API_KEY         = data.aws_ssm_parameter.anthropic_api_key.value
       GEMINI_API_KEY            = data.aws_ssm_parameter.gemini_api_key.value
