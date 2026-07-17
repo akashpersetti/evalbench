@@ -22,6 +22,16 @@ trigger a suite run and poll its status, gated by magic-link email auth
 (`POST /api/auth/request`, `GET /api/auth/verify`) against `POST
 /runs/async`, `GET /runs/{run_id}`, and `GET /runs/{run_id}/status`.
 
+A "Batch run" mode on the same page fans out one run per suite/domain pair
+via `POST /runs/batch`: pick any subset of domains, check off one or more
+suites, and give each checked suite its own comma-separated models list
+(chat models for `structured`/`latency_cost`, `openai/text-embedding-3-small`
+with a `::fixed_512`/`::recursive`/`::semantic` suffix for `rag`). The
+endpoint validates every suite name before starting anything — one bad suite
+name aborts the whole batch with no partial runs kicked off. The UI polls
+every resulting run independently and lists each as `suite · domain —
+status`.
+
 ## Prerequisites
 
 - Python 3.11 or newer
