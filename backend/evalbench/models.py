@@ -41,6 +41,30 @@ class RunConfig(BaseModel):
     judge_model: str = "anthropic/claude-sonnet-4-5"
 
 
+ConcreteDomain = Literal["software", "finance", "legal", "medical", "physics"]
+
+
+class BatchSuiteSpec(BaseModel):
+    suite: str
+    models: list[str] = Field(min_length=1)
+
+
+class BatchRunRequest(BaseModel):
+    domains: list[ConcreteDomain] = Field(min_length=1)
+    suites: list[BatchSuiteSpec] = Field(min_length=1)
+    judge_model: str = "anthropic/claude-sonnet-4-5"
+
+
+class BatchRunEntry(BaseModel):
+    run_id: str
+    suite: str
+    domain: str
+
+
+class BatchRunResponse(BaseModel):
+    runs: list[BatchRunEntry]
+
+
 class SuiteResult(BaseModel):
     run_id: str
     records: list[MetricRecord]

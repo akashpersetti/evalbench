@@ -14,7 +14,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from evalbench.config import get_settings
-from evalbench.models import MetricRecord, ResultsResponse, RunConfig, SuiteResult
+from evalbench.models import (
+    BatchRunEntry,
+    BatchRunRequest,
+    BatchRunResponse,
+    MetricRecord,
+    ResultsResponse,
+    RunConfig,
+    SuiteResult,
+)
 from evalbench.registry import get_suite, list_suites
 from evalbench.runner import aggregate_records, execute_run
 from evalbench.store import (
@@ -214,6 +222,48 @@ async def runs_async(
         runner_function=settings.runner_lambda_function,
     )
     return {"run_id": run_id}
+
+
+@app.post("/runs/batch", response_model=BatchRunResponse)
+async def runs_batch(
+    request: BatchRunRequest,
+    _: Annotated[None, Depends(verify_token)] = None,
+) -> BatchRunResponse:
+    """Fan out one async run per (suite, domain) pair in the batch."""
+    settings = get_settings()
+
+    if not settings.dynamodb_run_status_table:
+        raise HTTPException(
+            status_code=500,
+            detail="Run status table not configured"
+        )
+    if not settings.runner_lambda_function:
+        raise HTTPException(
+            status_code=500,
+            detail="Runner Lambda not configured"
+        )
+
+    # Resolve every suite name before starting any run, so an unknown suite
+    # anywhere in the batch aborts the whole request with no side effects.
+    resolved = [(spec, _resolve_suite(spec.suite)) for spec in request.suites]
+
+    entries = [
+        BatchRunEntry(
+            run_id=_start_run(
+                suite=suite,
+                domain=domain,
+                models=spec.models,
+                judge_model=request.judge_model,
+                run_status_table=settings.dynamodb_run_status_table,
+                runner_function=settings.runner_lambda_function,
+            ),
+            suite=suite.name,
+            domain=domain,
+        )
+        for spec, suite in resolved
+        for domain in request.domains
+    ]
+    return BatchRunResponse(runs=entries)
 
 
 @app.get("/results", response_model=ResultsResponse)

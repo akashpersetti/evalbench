@@ -2559,6 +2559,152 @@ async def test_api_post_runs_async_500s_when_runner_not_configured(
     assert response.status_code == 500
 
 
+async def test_api_post_runs_batch_creates_one_run_per_suite_domain_pair(
+    api_client, monkeypatch
+) -> None:
+    from evalbench.cloud import lambda_invoke as lambda_invoke_module
+    from evalbench.cloud import run_status as run_status_module
+
+    client, _ = api_client
+
+    # Create a second suite class with name "fake2"
+    class FakeSuite2(FakeSuite):
+        name = "fake2"
+
+    registry_module.SUITES["fake"] = FakeSuite()
+    registry_module.SUITES["fake2"] = FakeSuite2()
+    settings = Settings(
+        dynamodb_run_status_table="evalbench-test-run-status",
+        runner_lambda_function="evalbench-test-runner",
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+
+    invoked: list[tuple[str, RunConfig]] = []
+    monkeypatch.setattr(
+        lambda_invoke_module,
+        "invoke_runner_async",
+        lambda function_name, run_id, config: invoked.append((run_id, config)),
+    )
+
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="evalbench-test-run-status",
+            KeySchema=[{"AttributeName": "run_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "run_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        response = await client.post(
+            "/runs/batch",
+            json={
+                "domains": ["software", "finance"],
+                "suites": [
+                    {"suite": "fake", "models": ["openai/gpt-4o"]},
+                    {
+                        "suite": "fake2",
+                        "models": ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 200
+        entries = response.json()["runs"]
+        statuses = {
+            entry["run_id"]: run_status_module.get_status(
+                "evalbench-test-run-status", entry["run_id"]
+            )
+            for entry in entries
+        }
+
+    # 2 domains x 2 suite specs = 4 runs
+    assert len(entries) == 4
+    assert {(e["suite"], e["domain"]) for e in entries} == {
+        ("fake", "software"),
+        ("fake", "finance"),
+        ("fake2", "software"),
+        ("fake2", "finance"),
+    }
+    assert len(invoked) == 4
+
+    fake_entries = [e for e in entries if e["suite"] == "fake"]
+    for entry in fake_entries:
+        # FakeSuite.load_tasks always returns 2 tasks; 1 model -> total 2
+        assert statuses[entry["run_id"]]["total"] == 2
+
+    fake2_entries = [e for e in entries if e["suite"] == "fake2"]
+    for entry in fake2_entries:
+        # FakeSuite.load_tasks always returns 2 tasks; 2 models -> total 4
+        assert statuses[entry["run_id"]]["total"] == 4
+
+
+async def test_api_post_runs_batch_aborts_before_any_side_effect_on_unknown_suite(
+    api_client, monkeypatch
+) -> None:
+    from evalbench.cloud import lambda_invoke as lambda_invoke_module
+    from evalbench.cloud import run_status as run_status_module
+
+    client, _ = api_client
+    registry_module.SUITES["fake"] = FakeSuite()
+    settings = Settings(
+        dynamodb_run_status_table="evalbench-test-run-status",
+        runner_lambda_function="evalbench-test-runner",
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+
+    invoked: list[tuple[str, RunConfig]] = []
+    monkeypatch.setattr(
+        lambda_invoke_module,
+        "invoke_runner_async",
+        lambda function_name, run_id, config: invoked.append((run_id, config)),
+    )
+
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="evalbench-test-run-status",
+            KeySchema=[{"AttributeName": "run_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "run_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        response = await client.post(
+            "/runs/batch",
+            json={
+                "domains": ["software"],
+                "suites": [
+                    {"suite": "fake", "models": ["openai/gpt-4o"]},
+                    {"suite": "does-not-exist", "models": ["openai/gpt-4o"]},
+                ],
+            },
+        )
+        table_items = boto3.resource("dynamodb", region_name="us-east-1").Table(
+            "evalbench-test-run-status"
+        ).scan()["Items"]
+
+    assert response.status_code == 404
+    assert table_items == []
+    assert invoked == []
+
+
+async def test_api_post_runs_batch_500s_when_runner_not_configured(
+    api_client, monkeypatch
+) -> None:
+    client, _ = api_client
+    registry_module.SUITES["fake"] = FakeSuite()
+    settings = Settings(
+        dynamodb_run_status_table="evalbench-test-run-status",
+        runner_lambda_function=None,
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+
+    response = await client.post(
+        "/runs/batch",
+        json={
+            "domains": ["software"],
+            "suites": [{"suite": "fake", "models": ["openai/gpt-4o"]}],
+        },
+    )
+
+    assert response.status_code == 500
+
+
 async def test_api_results_applies_all_filters_and_returns_locked_shapes(
     api_client,
 ) -> None:
