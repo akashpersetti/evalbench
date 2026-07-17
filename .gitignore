@@ -1,5 +1,7 @@
 .env
 evalbench.db
+.DS_Store
+web/.DS_Store
 
 __pycache__/
 *.py[cod]
