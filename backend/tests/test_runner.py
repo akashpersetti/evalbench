@@ -4,6 +4,7 @@ import math
 import random
 import re
 import subprocess
+import tempfile
 import sys
 import textwrap
 import threading
@@ -2785,6 +2786,58 @@ async def test_api_post_runs_batch_creates_one_run_per_suite_domain_pair(
     for entry in fake2_entries:
         # FakeSuite.load_tasks always returns 2 tasks; 2 models -> total 4
         assert statuses[entry["run_id"]]["total"] == 4
+
+
+async def test_get_session_factory_does_not_leak_stale_merged_data_after_shards_deleted(
+    monkeypatch, tmp_path
+) -> None:
+    """A warm Lambda container reuses the same /tmp path across invocations.
+
+    merge_all_runs no-ops when zero shards exist in S3, so without clearing
+    the fixed local path first, a prior request's merged file (with rows
+    from since-deleted runs) would keep being served forever.
+    """
+    settings = Settings(s3_db_bucket="evalbench-dev-db", s3_db_prefix="runs/")
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+
+    stale_path = tmp_path / "evalbench_cloud.db"
+    stale_engine = create_engine(f"sqlite+aiosqlite:///{stale_path}")
+    await init_db(stale_engine)
+    await save_records(
+        create_session_factory(stale_engine),
+        [
+            MetricRecord(
+                id="stale-record",
+                run_id="deleted-run",
+                suite="latency_cost",
+                domain="software",
+                model="openai/gpt-4o",
+                provider="openai",
+                model_family="OpenAI",
+                task_id="task-1",
+                latency_ms=1.0,
+                prompt_tokens=1,
+                completion_tokens=1,
+                cost_usd=0.0,
+                error=None,
+                refused=False,
+                metrics={"quality_score": 1.0},
+                created_at=datetime.now(timezone.utc),
+            )
+        ],
+    )
+    await stale_engine.dispose()
+
+    with mock_aws():
+        boto3.client("s3", region_name="us-east-1").create_bucket(
+            Bucket="evalbench-dev-db"
+        )
+        # No shards uploaded - simulates every run having just been deleted.
+        factory = await api_module.get_session_factory()
+        records = await get_run_records(factory, "deleted-run")
+
+    assert records == []
 
 
 async def test_api_post_runs_batch_aborts_before_any_side_effect_on_unknown_suite(

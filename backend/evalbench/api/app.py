@@ -94,6 +94,11 @@ async def get_session_factory() -> SessionFactory:
         from evalbench.cloud import db_sync
 
         db_path = Path(tempfile.gettempdir()) / "evalbench_cloud.db"
+        # A warm Lambda container reuses this fixed /tmp path across
+        # invocations. merge_all_runs no-ops when zero shards exist, which
+        # would otherwise leave a prior request's merged file in place and
+        # silently serve stale data once every shard has been deleted.
+        db_path.unlink(missing_ok=True)
         db_sync.merge_all_runs(settings.s3_db_bucket, settings.s3_db_prefix, db_path)
         # Create an engine pointing to the just-merged database
         cloud_engine = create_engine(
@@ -116,6 +121,10 @@ async def get_run_session_factory(run_id: str) -> SessionFactory:
         from evalbench.cloud import db_sync
 
         db_path = Path(tempfile.gettempdir()) / f"evalbench_run_{run_id}.db"
+        # Same warm-container staleness risk as get_session_factory above:
+        # download_db no-ops on a missing shard, which would otherwise leave
+        # a prior request's file in place if this run's shard is deleted.
+        db_path.unlink(missing_ok=True)
         db_sync.download_db(
             settings.s3_db_bucket,
             db_sync.run_db_key(settings.s3_db_prefix, run_id),
