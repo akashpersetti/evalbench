@@ -1,5 +1,7 @@
 """Unit tests for the AWS-backed cloud/ helpers, using moto to mock AWS."""
 
+from pathlib import Path
+
 import boto3
 from moto import mock_aws
 
@@ -220,3 +222,223 @@ def test_verify_magic_link_rejects_expired_token():
 def test_verify_magic_link_rejects_unknown_token():
     _create_magic_token_table()
     assert not auth.verify_magic_link(token="never-issued", table_name=MAGIC_TOKEN_TABLE)
+
+
+# Additional Cloud Module Tests
+
+def test_invoke_runner_async_constructs_valid_payload(monkeypatch):
+    """Verify runner lambda invocation constructs valid payload."""
+    from evalbench.cloud import lambda_invoke
+    from evalbench.models import RunConfig
+    import json
+
+    # Mock boto3 lambda client
+    invoked_payloads = []
+
+    class MockLambdaClient:
+        def invoke(self, FunctionName, InvocationType, Payload):
+            invoked_payloads.append({
+                "function": FunctionName,
+                "type": InvocationType,
+                "payload": json.loads(Payload.decode())
+            })
+
+    def mock_boto3_client(service_name):
+        if service_name == "lambda":
+            return MockLambdaClient()
+        raise ValueError(f"Unexpected service: {service_name}")
+
+    import boto3
+    monkeypatch.setattr(boto3, "client", mock_boto3_client)
+
+    config = RunConfig(
+        suite="rag",
+        domain="overall",
+        models=["openai/gpt-4o"],
+        judge_model="anthropic/claude-sonnet-4-5"
+    )
+
+    lambda_invoke.invoke_runner_async("test-runner-function", "run-123", config)
+
+    assert len(invoked_payloads) == 1
+    assert invoked_payloads[0]["function"] == "test-runner-function"
+    assert invoked_payloads[0]["type"] == "Event"
+    assert invoked_payloads[0]["payload"]["run_id"] == "run-123"
+    assert invoked_payloads[0]["payload"]["config"]["suite"] == "rag"
+
+
+@mock_aws
+def test_run_status_tracks_progression_from_pending_to_done():
+    """Verify run status transitions through states correctly."""
+    _create_run_status_table()
+
+    run_status.create_status(RUN_STATUS_TABLE, "run-1", total=10)
+    initial = run_status.get_status(RUN_STATUS_TABLE, "run-1")
+    assert initial["status"] == "pending"
+    assert initial["completed"] == 0
+
+    run_status.set_running(RUN_STATUS_TABLE, "run-1")
+    running = run_status.get_status(RUN_STATUS_TABLE, "run-1")
+    assert running["status"] == "running"
+
+    for _ in range(5):
+        run_status.increment_completed(RUN_STATUS_TABLE, "run-1")
+
+    partial = run_status.get_status(RUN_STATUS_TABLE, "run-1")
+    assert partial["completed"] == 5
+    assert partial["status"] == "running"
+
+    run_status.set_done(RUN_STATUS_TABLE, "run-1")
+    final = run_status.get_status(RUN_STATUS_TABLE, "run-1")
+    assert final["status"] == "done"
+
+
+@mock_aws
+def test_magic_link_flow_end_to_end():
+    """Verify complete magic link flow: request → store → verify."""
+    _create_magic_token_table()
+    _verify_sender(OWNER_EMAIL)
+
+    # Step 1: Request magic link for owner
+    auth.request_magic_link(
+        email=OWNER_EMAIL,
+        owner_email=OWNER_EMAIL,
+        table_name=MAGIC_TOKEN_TABLE,
+        base_url="https://example.com/run",
+        sender_email=OWNER_EMAIL,
+        ttl_seconds=900,
+    )
+
+    # Step 2: Verify token was stored
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = dynamodb.Table(MAGIC_TOKEN_TABLE)
+    items = table.scan()["Items"]
+    assert len(items) == 1
+    token = items[0]["token"]
+
+    # Step 3: Verify the token
+    assert auth.verify_magic_link(token=token, table_name=MAGIC_TOKEN_TABLE)
+
+    # Step 4: Verify token is consumed
+    assert not auth.verify_magic_link(token=token, table_name=MAGIC_TOKEN_TABLE)
+
+
+@mock_aws
+def test_ssm_parameter_caching():
+    """Verify SSM parameter caching behavior."""
+    from evalbench.cloud import ssm
+
+    client = boto3.client("ssm", region_name="us-east-1")
+    client.put_parameter(
+        Name="/evalbench/test/cached-value",
+        Value="original",
+        Type="SecureString",
+    )
+
+    # First read
+    value1 = ssm.get_parameter("/evalbench/test/cached-value")
+    assert value1 == "original"
+
+    # Update the parameter
+    client.put_parameter(
+        Name="/evalbench/test/cached-value",
+        Value="updated",
+        Type="SecureString",
+        Overwrite=True,
+    )
+
+    # Second read should return cached value
+    value2 = ssm.get_parameter("/evalbench/test/cached-value")
+    assert value2 == "original"
+
+    # Clear cache and re-read
+    ssm.get_parameter.cache_clear()
+    value3 = ssm.get_parameter("/evalbench/test/cached-value")
+    assert value3 == "updated"
+
+
+@mock_aws
+def test_database_sync_download_creates_file():
+    """Verify database download creates local file from S3."""
+    from evalbench.cloud import db_sync
+    import tempfile
+
+    client = boto3.client("s3", region_name="us-east-1")
+    client.create_bucket(Bucket="test-db-bucket")
+    client.put_object(Bucket="test-db-bucket", Key="evalbench.db", Body=b"db-content")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "evalbench.db"
+        db_sync.download_db("test-db-bucket", "evalbench.db", db_path)
+        assert db_path.exists()
+        assert db_path.read_bytes() == b"db-content"
+
+
+@mock_aws
+def test_database_sync_upload_pushes_file():
+    """Verify database upload sends local file to S3."""
+    from evalbench.cloud import db_sync
+    import tempfile
+
+    client = boto3.client("s3", region_name="us-east-1")
+    client.create_bucket(Bucket="test-db-bucket")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "evalbench.db"
+        db_path.write_bytes(b"updated-db-content")
+        db_sync.upload_db("test-db-bucket", "evalbench.db", db_path)
+
+        # Verify upload
+        response = client.get_object(Bucket="test-db-bucket", Key="evalbench.db")
+        assert response["Body"].read() == b"updated-db-content"
+
+
+import json
+
+from evalbench.cloud import lambda_invoke
+from evalbench.models import RunConfig
+
+
+@mock_aws
+def test_invoke_runner_async_invokes_with_event_type_and_json_payload():
+    # Create IAM role first
+    iam = boto3.client("iam", region_name="us-east-1")
+    iam.create_role(
+        RoleName="test-role",
+        AssumeRolePolicyDocument=json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "lambda.amazonaws.com"
+                    },
+                    "Action": "sts:AssumeRole"
+                }
+            ]
+        })
+    )
+
+    client = boto3.client("lambda", region_name="us-east-1")
+    # moto's Lambda mock requires a real function to exist before Invoke succeeds;
+    # a minimal inline zip is enough since the handler never actually runs for
+    # an async ("Event") invocation under moto.
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("handler.py", "def handler(event, context): return event")
+    client.create_function(
+        FunctionName="evalbench-dev-runner",
+        Runtime="python3.12",
+        Role="arn:aws:iam::123456789012:role/test-role",
+        Handler="handler.handler",
+        Code={"ZipFile": buffer.getvalue()},
+    )
+
+    config = RunConfig(suite="structured", domain="software", models=["openai/gpt-4o"])
+    lambda_invoke.invoke_runner_async("evalbench-dev-runner", "run-123", config)
+
+    invocations = client.list_functions()["Functions"]
+    assert invocations[0]["FunctionName"] == "evalbench-dev-runner"

@@ -18,6 +18,7 @@ dependencies = [
     "aiosqlite",
     "python-dotenv",
     "boto3",
+    "mangum",
 ]
 
 [dependency-groups]
