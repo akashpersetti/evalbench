@@ -354,9 +354,20 @@ resource "aws_iam_role_policy" "runner_lambda_dynamodb" {
   })
 }
 
+# Lambda deployment package, staged to S3 - litellm's dependency tree pushes
+# the zip past Lambda's 50MB direct-upload limit, so both functions deploy
+# via S3 (250MB unzipped ceiling) instead of a local `filename` upload.
+resource "aws_s3_object" "lambda_deployment" {
+  bucket = aws_s3_bucket.db.id
+  key    = "lambda/lambda-deployment.zip"
+  source = "${path.module}/../backend/lambda-deployment.zip"
+  etag   = filemd5("${path.module}/../backend/lambda-deployment.zip")
+}
+
 # API Lambda function
 resource "aws_lambda_function" "api" {
-  filename         = "${path.module}/../backend/lambda-deployment.zip"
+  s3_bucket        = aws_s3_object.lambda_deployment.bucket
+  s3_key           = aws_s3_object.lambda_deployment.key
   source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
   function_name    = "evalbench-api"
   role             = aws_iam_role.api_lambda_role.arn
@@ -401,7 +412,8 @@ resource "aws_lambda_function" "api" {
 
 # Runner Lambda function
 resource "aws_lambda_function" "runner" {
-  filename         = "${path.module}/../backend/lambda-deployment.zip"
+  s3_bucket        = aws_s3_object.lambda_deployment.bucket
+  s3_key           = aws_s3_object.lambda_deployment.key
   source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
   function_name    = "evalbench-runner"
   role             = aws_iam_role.runner_lambda_role.arn
