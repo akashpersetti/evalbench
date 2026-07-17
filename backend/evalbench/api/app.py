@@ -76,7 +76,7 @@ app.add_middleware(
 security = HTTPBearer(auto_error=False)
 
 
-def get_session_factory() -> SessionFactory:
+async def get_session_factory() -> SessionFactory:
     """Return the session factory, re-downloading from S3 in cloud mode."""
     settings = get_settings()
 
@@ -90,6 +90,10 @@ def get_session_factory() -> SessionFactory:
         cloud_engine = create_engine(
             database_url=f"sqlite+aiosqlite:///{db_path}"
         )
+        # download_db no-ops when the S3 object doesn't exist yet (fresh
+        # deployment, or a run still in flight before its first upload), so
+        # the schema may be missing on the just-downloaded file.
+        await init_db(cloud_engine)
         return create_session_factory(cloud_engine)
 
     return default_session_factory

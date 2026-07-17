@@ -199,6 +199,11 @@ resource "aws_iam_role_policy" "api_lambda_s3" {
           "s3:DeleteObject"
         ]
         Resource = "${aws_s3_bucket.db.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.db.arn
       }
     ]
   })
@@ -328,6 +333,11 @@ resource "aws_iam_role_policy" "runner_lambda_s3" {
           "s3:PutObject"
         ]
         Resource = "${aws_s3_bucket.db.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.db.arn
       }
     ]
   })
