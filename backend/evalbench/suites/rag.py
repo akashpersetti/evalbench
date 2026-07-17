@@ -21,6 +21,7 @@ _CORPUS_KEYS = frozenset({"id", "domain", "title", "text"})
 _QUERY_KEYS = frozenset({"id", "domain", "query", "gold"})
 _GOLD_KEYS = frozenset({"doc_id", "note"})
 _ALLOWED_STRATEGIES = ("fixed_512", "recursive", "semantic")
+_EMBEDDING_BATCH_SIZE = 64
 
 ChunkStrategy = Literal["fixed_512", "recursive", "semantic"]
 
@@ -163,9 +164,15 @@ class RagSuite(Suite):
         else:
             chunks = chunk_semantic(self.documents, context, resolved_embedder)
 
-        chunk_vectors = context.embed(
-            [chunk.text for chunk in chunks], embedder=resolved_embedder
-        )
+        chunk_texts = [chunk.text for chunk in chunks]
+        chunk_vectors: list[list[float]] = []
+        for start in range(0, len(chunk_texts), _EMBEDDING_BATCH_SIZE):
+            chunk_vectors.extend(
+                context.embed(
+                    chunk_texts[start : start + _EMBEDDING_BATCH_SIZE],
+                    embedder=resolved_embedder,
+                )
+            )
         query_vector = context.embed(
             [task.prompt], embedder=resolved_embedder
         )[0]
