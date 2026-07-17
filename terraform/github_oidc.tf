@@ -57,6 +57,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "lambda:InvokeFunction",
           "lambda:TagResource",
           "lambda:ListTags",
+          "lambda:ListVersionsByFunction",
         ]
         Resource = "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-*"
       },
@@ -105,8 +106,16 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-*"
       },
       {
+        # The GitHub OIDC provider is an account-wide singleton this project
+        # only references (see the comment on the data source above) - list
+        # actions against it don't support resource-level scoping.
         Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:AddTagsToResource"]
+        Action   = ["iam:ListOpenIDConnectProviders", "iam:GetOpenIDConnectProvider"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:AddTagsToResource", "ssm:ListTagsForResource"]
         Resource = "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/evalbench/*"
       },
       {
@@ -136,8 +145,10 @@ resource "aws_iam_role_policy" "github_deploy" {
           "route53:ListResourceRecordSets",
           "route53:ChangeResourceRecordSets",
           "route53:GetChange",
+          "route53:ListTagsForResource",
           "acm:ListCertificates",
           "acm:DescribeCertificate",
+          "acm:GetCertificate",
         ]
         Resource = "*"
       },
