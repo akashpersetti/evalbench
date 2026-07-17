@@ -45,6 +45,12 @@ type BatchSuiteState = {
 
 const OWNER_EMAIL = "ahadagal@alumni.iu.edu";
 
+function modelsPlaceholderFor(suiteName: string): string {
+  return suiteName === "rag"
+    ? "openai/text-embedding-3-small::fixed_512,openai/text-embedding-3-small::recursive,openai/text-embedding-3-small::semantic"
+    : "openai/gpt-4o,anthropic/claude-sonnet-4-5";
+}
+
 function errorMessage(reason: unknown): string {
   return reason instanceof ApiError
     ? reason.message
@@ -432,7 +438,7 @@ export default function RunPage() {
                 type="text"
                 value={modelsInput}
                 onChange={(event) => setModelsInput(event.target.value)}
-                placeholder="openai/gpt-4o,anthropic/claude-sonnet-4-5"
+                placeholder={modelsPlaceholderFor(suite)}
                 className="w-full rounded-md border border-[#cbc8be] bg-[#fbfaf6] px-3 py-2 font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#283b32]"
               />
             </label>
@@ -531,7 +537,7 @@ export default function RunPage() {
                           },
                         }));
                       }}
-                      placeholder="openai/gpt-4o,anthropic/claude-sonnet-4-5"
+                      placeholder={modelsPlaceholderFor(descriptor.name)}
                       className="flex-1 rounded-md border border-[#cbc8be] bg-[#fbfaf6] px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#283b32]"
                     />
                   </div>
