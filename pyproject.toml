@@ -17,6 +17,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2",
     "aiosqlite",
     "python-dotenv",
+    "boto3",
 ]
 
 [dependency-groups]
@@ -24,6 +25,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "httpx",
+    "moto[s3,dynamodb,ses,lambda]>=5",
 ]
 
 [tool.hatch.build.targets.wheel]
