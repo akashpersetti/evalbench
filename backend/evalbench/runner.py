@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 import math
 import statistics
 import time
@@ -41,6 +42,8 @@ from evalbench.store import (
     save_records,
 )
 from evalbench.suites.base import Suite, Task
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -528,6 +531,10 @@ def _execute_one_sync(
             metrics = suite.evaluate(task, raw_output, judge)
         except Exception as exc:
             error = type(exc).__name__
+            logger.warning(
+                "task %s (model=%s, run=%s) failed evaluation: %s",
+                task.id, model, run_id, exc,
+            )
 
         try:
             refused = suite.detect_refusal(raw_output)

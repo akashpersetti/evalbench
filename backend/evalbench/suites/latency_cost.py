@@ -224,7 +224,7 @@ def pairwise_verdict(
         return "win" if candidate_is_a else "loss"
     if winner == "B":
         return "loss" if candidate_is_a else "win"
-    raise ValueError("pairwise judge winner must be 'A', 'B', or 'tie'")
+    raise ValueError(f"pairwise judge winner must be 'A', 'B', or 'tie': {result!r}")
 
 
 def _payload_text(task: Task, key: str) -> str:

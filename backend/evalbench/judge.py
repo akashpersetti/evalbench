@@ -61,9 +61,13 @@ class Judge:
         try:
             parsed = json.loads(text)
         except (json.JSONDecodeError, TypeError):
-            raise JudgeResponseError("Judge response was not valid JSON") from None
+            raise JudgeResponseError(
+                f"Judge response was not valid JSON: {text[:300]!r}"
+            ) from None
         if not isinstance(parsed, dict):
-            raise JudgeResponseError("Judge response JSON root was not an object")
+            raise JudgeResponseError(
+                f"Judge response JSON root was not an object: {text[:300]!r}"
+            )
         return parsed
 
     def score_free_text(
@@ -94,7 +98,9 @@ class Judge:
         )
         raw_score = result.get("score")
         if isinstance(raw_score, bool) or not isinstance(raw_score, (int, float)):
-            raise JudgeResponseError("Judge response did not contain a numeric score")
+            raise JudgeResponseError(
+                f"Judge response did not contain a numeric score: {result!r}"
+            )
         score = float(raw_score)
         if not math.isfinite(score):
             raise JudgeResponseError("Judge response score was not finite")

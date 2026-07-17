@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import random
+import re
 import subprocess
 import sys
 import textwrap
@@ -624,6 +625,53 @@ def test_embedding_normalization_failure_retains_latency_in_error_record(
     assert task._execution_context is None
 
 
+def test_judge_failure_logs_raw_response_for_diagnosis(caplog) -> None:
+    class JudgeCallingSuite(Suite):
+        name = "judge-calling"
+        metric_keys = ["quality_score"]
+        display_metrics = []
+
+        def load_tasks(self, domain: str) -> list[Task]:
+            return []
+
+        def build_prompt(self, task: Task) -> list[dict]:
+            return [{"role": "user", "content": task.prompt}]
+
+        def evaluate(
+            self, task: Task, raw_output: str, judge: judge_module.Judge
+        ) -> dict[str, float]:
+            judge.complete_json([])
+            return {"quality_score": 1.0}
+
+    malformed_judge_reply = "Sure, here is my verdict: not valid json at all"
+    completion = FakeCompletion(
+        ["candidate answer", malformed_judge_reply]
+    )
+    task = Task(
+        id="judge-calling-1",
+        domain="software",
+        prompt="synthetic prompt",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="evalbench.runner"):
+        record = runner_module._execute_one_sync(
+            suite=JudgeCallingSuite(),
+            task=task,
+            model="openai/gpt-4o",
+            run_id="run-judge-logging",
+            judge_model="anthropic/claude-sonnet-4-5",
+            completion_fn=completion,
+            embedding_fn=FakeEmbedding(),
+            timeout_seconds=3.0,
+            pricing_fn=lambda *_: 0.0,
+        )
+
+    assert record.error == "JudgeResponseError"
+    assert malformed_judge_reply in caplog.text
+    assert "judge-calling-1" in caplog.text
+    assert "openai/gpt-4o" in caplog.text
+
+
 def test_judge_complete_text_uses_injected_callable_timeout_and_rng() -> None:
     completion = FakeCompletion("plain text")
     rng = random.Random(17)
@@ -680,7 +728,7 @@ def test_judge_malformed_json_raises_named_error(content: str) -> None:
         "openai/gpt-4o", completion_fn=completion, timeout_seconds=3.0
     )
 
-    with pytest.raises(judge_module.JudgeResponseError):
+    with pytest.raises(judge_module.JudgeResponseError, match=re.escape(content)):
         judge.complete_json([])
 
 
@@ -752,13 +800,14 @@ def test_score_free_text_rejects_malformed_score(content: str) -> None:
         "openai/gpt-4o", completion_fn=completion, timeout_seconds=3.0
     )
 
-    with pytest.raises(judge_module.JudgeResponseError):
+    with pytest.raises(judge_module.JudgeResponseError) as excinfo:
         judge.score_free_text(
             prompt="synthetic prompt",
             expected="synthetic expected",
             actual="synthetic actual",
             rubric="synthetic rubric",
         )
+    assert repr(json.loads(content)) in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
