@@ -384,6 +384,7 @@ resource "aws_lambda_function" "api" {
     variables = {
       REQUIRE_AUTH                = "true"
       OWNER_EMAIL                 = "ahadagal@alumni.iu.edu"
+      SES_SENDER_EMAIL            = var.ses_sender_email
       DYNAMODB_MAGIC_TOKENS_TABLE = aws_dynamodb_table.magic_tokens.name
       DYNAMODB_RUN_STATUS_TABLE   = aws_dynamodb_table.run_status.name
       S3_DB_BUCKET                = aws_s3_bucket.db.id
@@ -508,9 +509,18 @@ resource "aws_lambda_permission" "api_gateway" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# SES email identity for sending magic link emails
+# SES email identity for receiving magic link emails
 resource "aws_ses_email_identity" "owner" {
   email = "ahadagal@alumni.iu.edu"
+}
+
+# SES email identity for sending magic link emails - deliberately a
+# different domain than owner_email. SES's per-address verification here
+# doesn't set up domain-level DKIM DNS records, so a sender address sharing
+# owner_email's domain fails DMARC alignment at any DMARC-enforcing
+# recipient (e.g. iu.edu is p=reject) and bounces every time.
+resource "aws_ses_email_identity" "sender" {
+  email = var.ses_sender_email
 }
 
 # S3 bucket for frontend (static Next.js export)

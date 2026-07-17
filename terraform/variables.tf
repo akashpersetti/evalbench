@@ -25,6 +25,12 @@ variable "admin_token_ssm_param" {
   default     = "/evalbench/dev/admin-token"
 }
 
+variable "ses_sender_email" {
+  type        = string
+  description = "SES sender identity for magic-link emails. Must NOT share owner_email's domain: SES only does per-address verification here (no domain-level DKIM DNS records), so a domain enforcing DMARC (e.g. iu.edu) rejects mail claiming to be From: that domain."
+  default     = "akash.hp@icloud.com"
+}
+
 variable "github_repo" {
   type        = string
   description = "owner/repo allowed to assume the deploy role via OIDC."
