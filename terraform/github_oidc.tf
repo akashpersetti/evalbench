@@ -42,6 +42,9 @@ resource "aws_iam_role_policy" "github_deploy" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Actual resource names are "evalbench-api"/"evalbench-runner" etc -
+        # there's no "-dev-" environment segment in the naming convention
+        # despite local.name_prefix suggesting one.
         Effect = "Allow"
         Action = [
           "lambda:UpdateFunctionCode",
@@ -55,19 +58,19 @@ resource "aws_iam_role_policy" "github_deploy" {
           "lambda:TagResource",
           "lambda:ListTags",
         ]
-        Resource = "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:${local.name_prefix}-*"
+        Resource = "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-*"
       },
       {
         Effect = "Allow"
         Action = ["s3:*"]
         Resource = [
-          "arn:aws:s3:::${local.name_prefix}-*",
-          "arn:aws:s3:::${local.name_prefix}-*/*",
+          "arn:aws:s3:::${var.project_name}-*",
+          "arn:aws:s3:::${var.project_name}-*/*",
         ]
       },
       {
         # Terraform state bucket - separate from the project's own
-        # evalbench-dev-* resource buckets above, so needs its own grant.
+        # evalbench-* resource buckets above, so needs its own grant.
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
         Resource = [
@@ -76,9 +79,15 @@ resource "aws_iam_role_policy" "github_deploy" {
         ]
       },
       {
-        Effect   = "Allow"
-        Action   = ["dynamodb:*"]
-        Resource = "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/${local.name_prefix}-*"
+        # Table names are literal ("magic_tokens", "run_status") with no
+        # project prefix at all, so they can't be wildcard-matched - list
+        # them explicitly instead.
+        Effect = "Allow"
+        Action = ["dynamodb:*"]
+        Resource = [
+          aws_dynamodb_table.magic_tokens.arn,
+          aws_dynamodb_table.run_status.arn,
+        ]
       },
       {
         Effect   = "Allow"
@@ -93,7 +102,7 @@ resource "aws_iam_role_policy" "github_deploy" {
       {
         Effect   = "Allow"
         Action   = ["iam:*"]
-        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-*"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-*"
       },
       {
         Effect   = "Allow"
@@ -101,8 +110,35 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/evalbench/*"
       },
       {
+        # DescribeParameters doesn't support resource-level scoping the way
+        # GetParameter does - AWS requires Resource "*" for it.
         Effect   = "Allow"
-        Action   = ["ses:GetEmailIdentity", "ses:VerifyEmailIdentity", "ses:TagResource"]
+        Action   = ["ssm:DescribeParameters"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ses:GetEmailIdentity",
+          "ses:VerifyEmailIdentity",
+          "ses:TagResource",
+          "ses:GetIdentityVerificationAttributes",
+        ]
+        Resource = "*"
+      },
+      {
+        # Route53/ACM lookups (ListHostedZones, ListCertificates) are
+        # list-style calls that only work with Resource "*".
+        Effect = "Allow"
+        Action = [
+          "route53:ListHostedZones",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ChangeResourceRecordSets",
+          "route53:GetChange",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+        ]
         Resource = "*"
       },
     ]
