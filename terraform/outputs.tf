@@ -5,7 +5,7 @@ output "cloudfront_domain_name" {
 
 output "frontend_url" {
   description = "Full HTTPS URL of the deployed frontend"
-  value       = "https://${aws_cloudfront_distribution.main.domain_name}"
+  value       = "https://evalbench.akashpersetti.com"
 }
 
 output "cloudfront_distribution_id" {

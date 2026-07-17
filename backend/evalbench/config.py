@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     s3_db_key: str = "evalbench.db"
     dynamodb_magic_tokens_table: str | None = None
     dynamodb_run_status_table: str | None = None
+    cors_allowed_origins: str = "http://localhost:3000"
+    frontend_url: str = "http://localhost:3000"
     owner_email: str = "ahadagal@alumni.iu.edu"
     runner_lambda_function: str | None = None
     ses_sender_email: str = "ahadagal@alumni.iu.edu"

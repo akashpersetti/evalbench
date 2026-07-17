@@ -24,7 +24,7 @@ const DOMAINS: Domain[] = [
   "physics",
 ];
 
-const OWNER_EMAIL = "ahadagal@iu.edu";
+const OWNER_EMAIL = "ahadagal@alumni.iu.edu";
 
 function errorMessage(reason: unknown): string {
   return reason instanceof ApiError

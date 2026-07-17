@@ -384,6 +384,8 @@ resource "aws_lambda_function" "api" {
     variables = {
       REQUIRE_AUTH                = "true"
       OWNER_EMAIL                 = "ahadagal@alumni.iu.edu"
+      CORS_ALLOWED_ORIGINS        = "https://evalbench.akashpersetti.com,https://${aws_cloudfront_distribution.main.domain_name},http://localhost:3000"
+      FRONTEND_URL                = "https://evalbench.akashpersetti.com"
       SES_SENDER_EMAIL            = var.ses_sender_email
       DYNAMODB_MAGIC_TOKENS_TABLE = aws_dynamodb_table.magic_tokens.name
       DYNAMODB_RUN_STATUS_TABLE   = aws_dynamodb_table.run_status.name
@@ -605,7 +607,20 @@ resource "aws_cloudfront_function" "url_rewrite" {
   EOT
 }
 
+data "aws_route53_zone" "akashpersetti" {
+  name         = "akashpersetti.com"
+  private_zone = false
+}
+
+data "aws_acm_certificate" "akashpersetti_wildcard" {
+  domain      = "*.akashpersetti.com"
+  statuses    = ["ISSUED"]
+  most_recent = true
+}
+
 resource "aws_cloudfront_distribution" "main" {
+  aliases = ["evalbench.akashpersetti.com"]
+
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
     origin_id                = "s3-frontend"
@@ -633,7 +648,7 @@ resource "aws_cloudfront_distribution" "main" {
 
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
-    default_ttl            = 3600
+    default_ttl            = 3601
     max_ttl                = 86400
 
     function_association {
@@ -716,11 +731,25 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn      = data.aws_acm_certificate.akashpersetti_wildcard.arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
   }
 
   tags = {
     Name        = "evalbench-distribution"
     Environment = var.environment
+  }
+}
+
+resource "aws_route53_record" "evalbench" {
+  zone_id = data.aws_route53_zone.akashpersetti.zone_id
+  name    = "evalbench.akashpersetti.com"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
   }
 }

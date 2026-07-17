@@ -63,7 +63,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        origin.strip()
+        for origin in get_settings().cors_allowed_origins.split(",")
+        if origin.strip()
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -277,7 +281,7 @@ async def auth_request(request: dict[str, str]) -> dict[str, bool]:
         email=email,
         owner_email=settings.owner_email,
         table_name=settings.dynamodb_magic_tokens_table,
-        base_url="https://example.cloudfront.net/run",
+        base_url=f"{settings.frontend_url}/run",
         sender_email=settings.ses_sender_email,
         ttl_seconds=settings.magic_link_ttl_seconds,
     )
