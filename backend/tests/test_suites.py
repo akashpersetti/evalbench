@@ -24,6 +24,7 @@ from evalbench.models import (
     SuiteResult,
 )
 from evalbench.suites.base import Suite, Task
+from evalbench.suites.rag import RagSuite
 from evalbench.suites.structured import (
     StructuredSuite,
     build_retry_messages,
@@ -1335,9 +1336,11 @@ def test_list_suites_sorts_by_name(monkeypatch) -> None:
 def test_registry_registers_declared_suites() -> None:
     assert [suite.name for suite in registry_module.list_suites()] == [
         "latency_cost",
+        "rag",
         "structured",
     ]
     assert registry_module.get_suite("latency_cost").name == "latency_cost"
+    assert isinstance(registry_module.get_suite("rag"), RagSuite)
     assert isinstance(registry_module.get_suite("structured"), StructuredSuite)
 
 
@@ -1394,10 +1397,15 @@ def _assert_suite_contract(suite: Suite) -> None:
     assert first_ids == [task.id for task in second_tasks]
     assert len(first_ids) == len(set(first_ids))
 
+    model = (
+        "openai/text-embedding-3-small::fixed_512"
+        if isinstance(suite, RagSuite)
+        else "openai/gpt-4o"
+    )
     for task in first_tasks:
         context = runner_module.ExecutionContext(
             run_id="contract-run",
-            model="openai/gpt-4o",
+            model=model,
             task_id=task.id,
             completion_fn=_contract_completion,
             embedding_fn=_contract_embedding,
