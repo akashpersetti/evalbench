@@ -6,15 +6,21 @@ EvalBench is a provider-agnostic LLM evaluation platform. One shared harness run
 
 ## Current status
 
-The `structured` suite is registered and runnable. It contains exactly 40
-audited tasks: eight each in `software`, `finance`, `legal`, `medical`, and
-`physics`. The current web application remains a runnable placeholder; the
-dashboard is Phase 3 work.
+Three suites are registered and runnable: `structured`, `latency_cost`, and
+`rag`. `structured` contains exactly 40 audited tasks: eight each in
+`software`, `finance`, `legal`, `medical`, and `physics`. `latency_cost` and
+`rag` have their own task sets under `backend/data/latency_cost/` and
+`backend/data/rag/`, and declare their own `metric_keys` (see each suite
+module under `backend/evalbench/suites/`).
 
 ### Dashboard
 
-The dashboard is Phase 3 work and is not delivered in Phase 1. The current web
-application is only a runnable placeholder.
+The web app is a working dashboard, not a placeholder. `/` renders a
+leaderboard, bar chart, filter controls, and scope bar backed by the live
+`GET /results` and `GET /suites` endpoints. `/run` lets an authenticated owner
+trigger a suite run and poll its status, gated by magic-link email auth
+(`POST /api/auth/request`, `GET /api/auth/verify`) against `POST
+/runs/async`, `GET /runs/{run_id}`, and `GET /runs/{run_id}/status`.
 
 ## Prerequisites
 
@@ -305,6 +311,19 @@ row and aggregate calculations.
 
 Every aggregate therefore carries its own sample size and interval; consumers
 must not render a bare mean.
+
+## Cloud deployment
+
+`git push` to `main` triggers `.github/workflows/deploy.yml`, which builds the
+Lambda package (`uv run python backend/deploy.py`, requires Docker) and runs
+Terraform (`terraform/`) via a GitHub OIDC role — no long-lived AWS
+credentials in CI. Terraform provisions the API and runner Lambdas, the
+Terraform state and `evalbench.db` S3 buckets, SES for magic-link auth email,
+and SSM parameters for provider keys, the judge model, and the admin token.
+
+One-time bootstrap (state bucket, SES verification, SSM parameters, GitHub
+secrets, first manual `terraform apply`, database migration to S3) is in
+[docs/cloud-deploy.md](docs/cloud-deploy.md).
 
 ## Adding a suite
 
