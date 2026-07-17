@@ -262,6 +262,25 @@ export type RunStatus = {
   error?: string;
 };
 
+export type ConcreteDomain = Exclude<Domain, "overall">;
+
+export type BatchSuiteInput = {
+  suite: string;
+  models: string[];
+};
+
+export type BatchRunRequest = {
+  domains: ConcreteDomain[];
+  suites: BatchSuiteInput[];
+  judgeModel?: string;
+};
+
+export type BatchRunEntry = {
+  run_id: string;
+  suite: string;
+  domain: string;
+};
+
 export type MetricRecord = {
   id: string;
   run_id: string;
@@ -356,6 +375,44 @@ export async function startRun(
   }
 
   return payload.run_id;
+}
+
+function isBatchRunEntry(value: unknown): value is BatchRunEntry {
+  return (
+    isRecord(value) &&
+    typeof value.run_id === "string" &&
+    typeof value.suite === "string" &&
+    typeof value.domain === "string"
+  );
+}
+
+function isBatchRunResponse(value: unknown): value is { runs: BatchRunEntry[] } {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.runs) &&
+    value.runs.every(isBatchRunEntry)
+  );
+}
+
+export async function startBatch(
+  request: BatchRunRequest,
+  adminToken: string,
+): Promise<BatchRunEntry[]> {
+  const payload = await postJson(
+    "/runs/batch",
+    {
+      domains: request.domains,
+      suites: request.suites,
+      ...(request.judgeModel ? { judge_model: request.judgeModel } : {}),
+    },
+    { Authorization: `Bearer ${adminToken}` },
+  );
+
+  if (!isBatchRunResponse(payload)) {
+    throw new ApiError(500, "Malformed API response");
+  }
+
+  return payload.runs;
 }
 
 export async function fetchRunStatus(runId: string): Promise<RunStatus> {
