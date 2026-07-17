@@ -10,16 +10,7 @@ deploy (`.github/workflows/deploy.yml`).
 
 Note the bucket name — it's the `TF_STATE_BUCKET` GitHub secret in step 6.
 
-## 2. Migrate the existing local database
-
-    aws s3 mb s3://evalbench-dev-db-$(aws sts get-caller-identity --query Account --output text) \
-      --region us-east-1
-    aws s3 cp evalbench.db s3://evalbench-dev-db-$(aws sts get-caller-identity --query Account --output text)/evalbench.db
-
-(If Task 10's Terraform apply already created the `db` bucket with a different
-exact name, use `terraform output db_bucket` instead of recomputing it.)
-
-## 3. Verify the sender/owner email in SES
+## 2. Verify the sender/owner email in SES
 
     aws ses verify-email-identity --email-address ahadagal@alumni.iu.edu --region us-east-1
 
@@ -28,21 +19,24 @@ only allows sending to verified addresses — since the magic-link sender and
 recipient are the same address, this is sufficient; no production-access
 request needed.
 
-## 4. Set the admin bearer token
+## 3. Set the admin bearer token
 
     openssl rand -hex 32
     aws ssm put-parameter \
-      --name /evalbench/dev/admin-token \
+      --name /evalbench/admin_token \
       --type SecureString \
       --value "<paste the generated token>" \
       --overwrite \
       --region us-east-1
 
-## 5. Set provider API keys and judge model in SSM
+## 4. Set provider API keys and judge model in SSM
+
+Paths must match `terraform/api_keys.tf` exactly (no `/dev/` segment,
+underscores not hyphens):
 
     for name in openai anthropic gemini openrouter xai; do
       aws ssm put-parameter \
-        --name "/evalbench/dev/${name}-api-key" \
+        --name "/evalbench/${name}_api_key" \
         --type SecureString \
         --value "<your ${name} key>" \
         --overwrite \
@@ -50,16 +44,17 @@ request needed.
     done
 
     aws ssm put-parameter \
-      --name /evalbench/dev/judge-model \
+      --name /evalbench/judge_model \
       --type SecureString \
       --value "anthropic/claude-sonnet-4-5" \
       --overwrite \
       --region us-east-1
 
-These are read by Terraform at `apply` time and injected as `runner` Lambda
-environment variables — see design correction 4 in the implementation plan.
+These are read by Terraform at `apply` time (`terraform/api_keys.tf`'s
+`data "aws_ssm_parameter"` blocks) and injected as real values into both
+Lambdas' environment variables — see `terraform/main.tf`.
 
-## 6. GitHub repository secrets
+## 5. GitHub repository secrets
 
 In the repo's Settings → Secrets and variables → Actions, set:
 
@@ -69,6 +64,14 @@ In the repo's Settings → Secrets and variables → Actions, set:
 | `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID |
 | `AWS_REGION` | `us-east-1` |
 | `TF_STATE_BUCKET` | The bucket created in step 1 |
+
+## 6. Build the Lambda deployment package
+
+    uv run python backend/deploy.py
+
+Requires Docker running locally. Produces `backend/lambda-deployment.zip`,
+which both the `api` and `runner` Lambda resources in `terraform/main.tf`
+reference.
 
 ## 7. First deploy
 
@@ -82,3 +85,16 @@ bootstrapping chicken-and-egg step:
 
 After this, every `git push` to `main` re-applies automatically via GitHub
 Actions using the OIDC role this first apply created.
+
+## 8. Migrate the existing local database
+
+Terraform creates the `db` bucket (`aws_s3_bucket.db`) as part of step 7 —
+don't create it manually beforehand, or `terraform apply` will fail trying to
+create a bucket that already exists. Once step 7 has run:
+
+    aws s3 cp evalbench.db "s3://$(terraform output -raw s3_db_bucket)/evalbench.db"
+
+Run this from the repo root (where `evalbench.db` lives), with `terraform`
+pointed at the `terraform/` directory for the output lookup — e.g.
+`terraform -chdir=terraform output -raw s3_db_bucket` if running from the
+repo root directly.
