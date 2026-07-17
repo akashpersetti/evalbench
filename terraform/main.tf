@@ -1,3 +1,6 @@
+# Data source for current AWS account ID
+data "aws_caller_identity" "current" {}
+
 # DynamoDB table for magic_tokens
 resource "aws_dynamodb_table" "magic_tokens" {
   name         = "magic_tokens"
@@ -485,17 +488,9 @@ resource "aws_lambda_permission" "api_gateway" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# Data source for current AWS account ID
-data "aws_caller_identity" "current" {}
-
 # SES email identity for sending magic link emails
 resource "aws_ses_email_identity" "owner" {
   email = "ahadagal@alumni.iu.edu"
-
-  tags = {
-    Name        = "evalbench-owner-email"
-    Environment = var.environment
-  }
 }
 
 # S3 bucket for frontend (static Next.js export)
@@ -585,29 +580,8 @@ resource "aws_cloudfront_distribution" "main" {
     max_ttl                = 86400
   }
 
-  # Cache behavior for /run route (bypasses cache for dynamic content)
-  cache_behavior {
-    path_pattern     = "/run*"
-    allowed_methods  = ["GET", "HEAD"]
-    cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "s3-frontend"
-
-    forwarded_values {
-      query_string = true
-
-      cookies {
-        forward = "all"
-      }
-    }
-
-    viewer_protocol_policy = "redirect-to-https"
-    min_ttl                = 0
-    default_ttl            = 0
-    max_ttl                = 0
-  }
-
-  # Cache behavior for index.html (no caching)
-  cache_behavior {
+  # Ordered cache behaviors are evaluated in order; first match wins
+  ordered_cache_behavior {
     path_pattern     = "/index.html"
     allowed_methods  = ["GET", "HEAD"]
     cached_methods   = ["GET", "HEAD"]
@@ -618,6 +592,26 @@ resource "aws_cloudfront_distribution" "main" {
 
       cookies {
         forward = "none"
+      }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 0
+    max_ttl                = 0
+  }
+
+  ordered_cache_behavior {
+    path_pattern     = "/run*"
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "s3-frontend"
+
+    forwarded_values {
+      query_string = true
+
+      cookies {
+        forward = "all"
       }
     }
 
