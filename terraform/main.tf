@@ -568,6 +568,33 @@ resource "aws_s3_bucket_policy" "frontend" {
 }
 
 # CloudFront distribution for serving the frontend
+# Next.js's static export produces multi-page output (run.html, not
+# run/index.html), and this origin is the S3 REST API via OAC - not S3
+# website hosting - so there's no automatic .html suffix resolution for
+# extensionless paths. Without this, GET /run 403s (AccessDenied from S3,
+# which custom_error_response below doesn't even catch since it only maps
+# 404s). Rewrite the URI to add .html before it reaches the origin.
+resource "aws_cloudfront_function" "url_rewrite" {
+  name    = "evalbench-dev-url-rewrite"
+  runtime = "cloudfront-js-2.0"
+  comment = "Append .html to extensionless URIs for Next.js static export"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+
+      if (uri.endsWith('/')) {
+        request.uri += 'index.html';
+      } else if (!uri.includes('.')) {
+        request.uri += '.html';
+      }
+
+      return request;
+    }
+  EOT
+}
+
 resource "aws_cloudfront_distribution" "main" {
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -598,6 +625,11 @@ resource "aws_cloudfront_distribution" "main" {
     min_ttl                = 0
     default_ttl            = 3600
     max_ttl                = 86400
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.url_rewrite.arn
+    }
   }
 
   # Ordered cache behaviors are evaluated in order; first match wins
@@ -619,6 +651,11 @@ resource "aws_cloudfront_distribution" "main" {
     min_ttl                = 0
     default_ttl            = 0
     max_ttl                = 0
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.url_rewrite.arn
+    }
   }
 
   ordered_cache_behavior {
@@ -639,11 +676,24 @@ resource "aws_cloudfront_distribution" "main" {
     min_ttl                = 0
     default_ttl            = 0
     max_ttl                = 0
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.url_rewrite.arn
+    }
   }
 
-  # Handle 404s by serving index.html for client-side routing
+  # Handle 404s (and 403s - S3+OAC returns 403, not 404, for missing keys)
+  # by serving index.html for client-side routing
   custom_error_response {
     error_code            = 404
+    response_code         = 200
+    response_page_path    = "/index.html"
+    error_caching_min_ttl = 0
+  }
+
+  custom_error_response {
+    error_code            = 403
     response_code         = 200
     response_page_path    = "/index.html"
     error_caching_min_ttl = 0
