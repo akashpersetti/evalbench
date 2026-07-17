@@ -125,3 +125,98 @@ def test_get_parameter_reads_and_caches_secure_string():
 
     ssm.get_parameter.cache_clear()
     assert ssm.get_parameter("/evalbench/test/admin-token") == "rotated-value"
+
+
+import time
+
+from evalbench.cloud import auth
+
+MAGIC_TOKEN_TABLE = "evalbench-test-magic-tokens"
+OWNER_EMAIL = "ahadagal@alumni.iu.edu"
+
+
+def _create_magic_token_table():
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.create_table(
+        TableName=MAGIC_TOKEN_TABLE,
+        KeySchema=[{"AttributeName": "token", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "token", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+def _verify_sender(sender_email: str):
+    boto3.client("ses", region_name="us-east-1").verify_email_identity(
+        EmailAddress=sender_email
+    )
+
+
+@mock_aws
+def test_request_magic_link_stores_token_and_sends_email_for_owner():
+    _create_magic_token_table()
+    _verify_sender(OWNER_EMAIL)
+    dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = dynamodb.Table(MAGIC_TOKEN_TABLE)
+
+    auth.request_magic_link(
+        email=OWNER_EMAIL,
+        owner_email=OWNER_EMAIL,
+        table_name=MAGIC_TOKEN_TABLE,
+        base_url="https://example.cloudfront.net/run",
+        sender_email=OWNER_EMAIL,
+        ttl_seconds=900,
+    )
+
+    items = table.scan()["Items"]
+    assert len(items) == 1
+    assert len(items[0]["token"]) == 64
+    assert items[0]["expires_at"] > int(time.time())
+
+
+@mock_aws
+def test_request_magic_link_no_ops_for_non_owner_email():
+    _create_magic_token_table()
+    _verify_sender(OWNER_EMAIL)
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        MAGIC_TOKEN_TABLE
+    )
+
+    auth.request_magic_link(
+        email="someone-else@example.com",
+        owner_email=OWNER_EMAIL,
+        table_name=MAGIC_TOKEN_TABLE,
+        base_url="https://example.cloudfront.net/run",
+        sender_email=OWNER_EMAIL,
+        ttl_seconds=900,
+    )
+
+    assert table.scan()["Items"] == []
+
+
+@mock_aws
+def test_verify_magic_link_accepts_and_consumes_valid_token():
+    _create_magic_token_table()
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        MAGIC_TOKEN_TABLE
+    )
+    table.put_item(Item={"token": "good-token", "expires_at": int(time.time()) + 900})
+
+    assert auth.verify_magic_link(token="good-token", table_name=MAGIC_TOKEN_TABLE)
+    assert not auth.verify_magic_link(token="good-token", table_name=MAGIC_TOKEN_TABLE)
+
+
+@mock_aws
+def test_verify_magic_link_rejects_expired_token():
+    _create_magic_token_table()
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(
+        MAGIC_TOKEN_TABLE
+    )
+    table.put_item(Item={"token": "stale-token", "expires_at": int(time.time()) - 1})
+
+    assert not auth.verify_magic_link(token="stale-token", table_name=MAGIC_TOKEN_TABLE)
+
+
+@mock_aws
+def test_verify_magic_link_rejects_unknown_token():
+    _create_magic_token_table()
+    assert not auth.verify_magic_link(token="never-issued", table_name=MAGIC_TOKEN_TABLE)
