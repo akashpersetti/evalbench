@@ -42,3 +42,59 @@ def test_upload_db_writes_object_from_local_file(tmp_path):
 
     body = client.get_object(Bucket=BUCKET, Key=KEY)["Body"].read()
     assert body == b"updated-bytes"
+
+
+from evalbench.cloud import run_status
+
+RUN_STATUS_TABLE = "evalbench-test-run-status"
+
+
+def _create_run_status_table():
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.create_table(
+        TableName=RUN_STATUS_TABLE,
+        KeySchema=[{"AttributeName": "run_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "run_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+
+@mock_aws
+def test_run_status_lifecycle_tracks_progress_and_completion():
+    _create_run_status_table()
+
+    run_status.create_status(RUN_STATUS_TABLE, "run-1", total=4)
+    assert run_status.get_status(RUN_STATUS_TABLE, "run-1") == {
+        "run_id": "run-1",
+        "status": "pending",
+        "completed": 0,
+        "total": 4,
+    }
+
+    run_status.set_running(RUN_STATUS_TABLE, "run-1")
+    assert run_status.get_status(RUN_STATUS_TABLE, "run-1")["status"] == "running"
+
+    run_status.increment_completed(RUN_STATUS_TABLE, "run-1")
+    run_status.increment_completed(RUN_STATUS_TABLE, "run-1")
+    assert run_status.get_status(RUN_STATUS_TABLE, "run-1")["completed"] == 2
+
+    run_status.set_done(RUN_STATUS_TABLE, "run-1")
+    assert run_status.get_status(RUN_STATUS_TABLE, "run-1")["status"] == "done"
+
+
+@mock_aws
+def test_run_status_records_error_message():
+    _create_run_status_table()
+    run_status.create_status(RUN_STATUS_TABLE, "run-2", total=1)
+
+    run_status.set_error(RUN_STATUS_TABLE, "run-2", "synthetic failure")
+
+    item = run_status.get_status(RUN_STATUS_TABLE, "run-2")
+    assert item["status"] == "error"
+    assert item["error"] == "synthetic failure"
+
+
+@mock_aws
+def test_get_status_returns_none_for_missing_run():
+    _create_run_status_table()
+    assert run_status.get_status(RUN_STATUS_TABLE, "no-such-run") is None
