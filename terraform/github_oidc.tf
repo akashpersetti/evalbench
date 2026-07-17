@@ -66,6 +66,16 @@ resource "aws_iam_role_policy" "github_deploy" {
         ]
       },
       {
+        # Terraform state bucket - separate from the project's own
+        # evalbench-dev-* resource buckets above, so needs its own grant.
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
+        Resource = [
+          "arn:aws:s3:::${var.tf_state_bucket}",
+          "arn:aws:s3:::${var.tf_state_bucket}/*",
+        ]
+      },
+      {
         Effect   = "Allow"
         Action   = ["dynamodb:*"]
         Resource = "arn:aws:dynamodb:*:${data.aws_caller_identity.current.account_id}:table/${local.name_prefix}-*"

@@ -37,6 +37,12 @@ variable "github_repo" {
   default     = "akashpersetti/evalbench"
 }
 
+variable "tf_state_bucket" {
+  type        = string
+  description = "S3 bucket holding this project's Terraform state (the TF_STATE_BUCKET GitHub secret) - the deploy role needs read/write here to run init/plan/apply in CI."
+  default     = "evalbench-terraform-state-914697327092"
+}
+
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
   common_tags = {
