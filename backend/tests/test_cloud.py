@@ -46,6 +46,59 @@ def test_upload_db_writes_object_from_local_file(tmp_path):
     assert body == b"updated-bytes"
 
 
+def test_run_db_key_joins_prefix_and_run_id():
+    assert db_sync.run_db_key("runs/", "abc-123") == "runs/abc-123.db"
+
+
+@mock_aws
+def test_merge_all_runs_no_shards_leaves_local_path_absent(tmp_path):
+    boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=BUCKET)
+
+    local_path = tmp_path / "merged.db"
+    db_sync.merge_all_runs(BUCKET, "runs/", local_path)
+
+    assert not local_path.exists()
+
+
+import sqlite3
+
+
+def _write_shard_db(path, row_id, run_id):
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE metric_records (id TEXT PRIMARY KEY, run_id TEXT, value TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO metric_records VALUES (?, ?, ?)", (row_id, run_id, "x")
+    )
+    connection.commit()
+    connection.close()
+
+
+@mock_aws
+def test_merge_all_runs_unions_rows_across_shards(tmp_path):
+    client = boto3.client("s3", region_name="us-east-1")
+    client.create_bucket(Bucket=BUCKET)
+
+    shard_a = tmp_path / "a.db"
+    shard_b = tmp_path / "b.db"
+    _write_shard_db(shard_a, "row-a", "run-a")
+    _write_shard_db(shard_b, "row-b", "run-b")
+    client.upload_file(str(shard_a), BUCKET, "runs/run-a.db")
+    client.upload_file(str(shard_b), BUCKET, "runs/run-b.db")
+
+    local_path = tmp_path / "merged.db"
+    db_sync.merge_all_runs(BUCKET, "runs/", local_path)
+
+    connection = sqlite3.connect(local_path)
+    rows = connection.execute(
+        "SELECT id, run_id FROM metric_records ORDER BY id"
+    ).fetchall()
+    connection.close()
+
+    assert rows == [("row-a", "run-a"), ("row-b", "run-b")]
+
+
 from evalbench.cloud import run_status
 
 RUN_STATUS_TABLE = "evalbench-test-run-status"
