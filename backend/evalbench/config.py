@@ -22,6 +22,17 @@ class Settings(BaseSettings):
     judge_model: str = "anthropic/claude-sonnet-4-5"
     litellm_timeout_seconds: float = 60.0
     max_concurrency: int = Field(default=4, ge=1)
+    require_auth: bool = False
+    admin_token: str | None = None
+    aws_region: str = "us-east-1"
+    s3_db_bucket: str | None = None
+    s3_db_key: str = "evalbench.db"
+    dynamodb_magic_tokens_table: str | None = None
+    dynamodb_run_status_table: str | None = None
+    owner_email: str = "ahadagal@alumni.iu.edu"
+    runner_lambda_function: str | None = None
+    ses_sender_email: str = "ahadagal@alumni.iu.edu"
+    magic_link_ttl_seconds: int = 900
 
 
 @lru_cache(maxsize=1)
