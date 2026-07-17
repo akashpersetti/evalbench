@@ -85,22 +85,46 @@ security = HTTPBearer(auto_error=False)
 
 
 async def get_session_factory() -> SessionFactory:
-    """Return the session factory, re-downloading from S3 in cloud mode."""
+    """Return a session factory over every run's merged data, in cloud mode."""
     settings = get_settings()
 
-    # In cloud mode, re-download the database on every request for freshness
+    # In cloud mode, re-merge every run's shard on every request for freshness
     if settings.s3_db_bucket:
         from evalbench.cloud import db_sync
 
         db_path = Path(tempfile.gettempdir()) / "evalbench_cloud.db"
-        db_sync.download_db(settings.s3_db_bucket, settings.s3_db_key, db_path)
-        # Create an engine pointing to the just-downloaded database
+        db_sync.merge_all_runs(settings.s3_db_bucket, settings.s3_db_prefix, db_path)
+        # Create an engine pointing to the just-merged database
         cloud_engine = create_engine(
             database_url=f"sqlite+aiosqlite:///{db_path}"
         )
-        # download_db no-ops when the S3 object doesn't exist yet (fresh
-        # deployment, or a run still in flight before its first upload), so
-        # the schema may be missing on the just-downloaded file.
+        # merge_all_runs no-ops when no shards exist yet (fresh deployment,
+        # or every run still in flight before its first upload), so the
+        # schema may be missing on the just-merged file.
+        await init_db(cloud_engine)
+        return create_session_factory(cloud_engine)
+
+    return default_session_factory
+
+
+async def get_run_session_factory(run_id: str) -> SessionFactory:
+    """Return a session factory scoped to one run's S3 shard, in cloud mode."""
+    settings = get_settings()
+
+    if settings.s3_db_bucket:
+        from evalbench.cloud import db_sync
+
+        db_path = Path(tempfile.gettempdir()) / f"evalbench_run_{run_id}.db"
+        db_sync.download_db(
+            settings.s3_db_bucket,
+            db_sync.run_db_key(settings.s3_db_prefix, run_id),
+            db_path,
+        )
+        cloud_engine = create_engine(
+            database_url=f"sqlite+aiosqlite:///{db_path}"
+        )
+        # download_db no-ops when this run's shard doesn't exist yet (run
+        # still in flight, or never started), so the schema may be missing.
         await init_db(cloud_engine)
         return create_session_factory(cloud_engine)
 
@@ -298,7 +322,7 @@ async def results(
 @app.get("/runs/{run_id}", response_model=list[MetricRecord])
 async def raw_run(
     run_id: str,
-    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
+    session_factory: Annotated[SessionFactory, Depends(get_run_session_factory)],
 ) -> list[MetricRecord]:
     """Return the persisted records for one run."""
     records = await get_run_records(session_factory, run_id)
