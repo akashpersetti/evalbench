@@ -61,6 +61,14 @@ class BatchRunEntry(BaseModel):
     domain: str
 
 
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: Literal["pending", "running", "done", "error"]
+    completed: int
+    total: int
+    error: str | None = None
+
+
 class BatchRunResponse(BaseModel):
     runs: list[BatchRunEntry]
 

@@ -21,6 +21,7 @@ from evalbench.models import (
     MetricRecord,
     ResultsResponse,
     RunConfig,
+    RunStatusResponse,
     SuiteResult,
 )
 from evalbench.registry import get_suite, list_suites
@@ -331,7 +332,7 @@ async def raw_run(
     return records
 
 
-@app.get("/runs/{run_id}/status")
+@app.get("/runs/{run_id}/status", response_model=RunStatusResponse)
 async def run_status_endpoint(run_id: str) -> dict[str, Any]:
     """Return the current progress of an async run."""
     settings = get_settings()

@@ -2592,6 +2592,52 @@ async def test_api_post_runs_async_creates_status_and_invokes_runner(
     assert invoked[0][1].suite == "fake"
 
 
+async def test_api_get_run_status_returns_numeric_completed_and_total(
+    api_client, monkeypatch
+) -> None:
+    from evalbench.cloud import run_status as run_status_module
+
+    client, _ = api_client
+    settings = Settings(dynamodb_run_status_table="evalbench-test-run-status")
+    monkeypatch.setattr(api_module, "get_settings", lambda: settings)
+
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="evalbench-test-run-status",
+            KeySchema=[{"AttributeName": "run_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "run_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        run_status_module.create_status(
+            "evalbench-test-run-status", "run-numeric-status", total=8
+        )
+        run_status_module.set_running(
+            "evalbench-test-run-status", "run-numeric-status"
+        )
+        for _ in range(8):
+            run_status_module.increment_completed(
+                "evalbench-test-run-status", "run-numeric-status"
+            )
+        run_status_module.set_done("evalbench-test-run-status", "run-numeric-status")
+
+        response = await client.get("/runs/run-numeric-status/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "run_id": "run-numeric-status",
+        "status": "done",
+        "completed": 8,
+        "total": 8,
+        "error": None,
+    }
+    # DynamoDB returns Number attributes as Decimal via boto3; without an
+    # explicit response_model FastAPI's default encoder stringifies Decimal,
+    # which silently breaks frontend code expecting JSON numbers.
+    assert isinstance(payload["completed"], int)
+    assert isinstance(payload["total"], int)
+
+
 async def test_api_post_runs_async_500s_when_runner_not_configured(
     api_client, monkeypatch
 ) -> None:
