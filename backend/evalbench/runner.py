@@ -571,12 +571,14 @@ async def execute_run(
     session_factory: SessionFactory | None = None,
     completion_fn: Callable[..., Any] | None = None,
     embedding_fn: Callable[..., Any] | None = None,
+    run_id: str | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> SuiteResult:
     """Execute and atomically persist every task/model pair for one run."""
     settings = get_settings()
     suite = get_suite(config.suite)
     tasks = suite.load_tasks(config.domain)
-    run_id = str(uuid.uuid4())
+    run_id = run_id or str(uuid.uuid4())
     selected_completion = (
         completion_fn if completion_fn is not None else litellm.completion
     )
@@ -617,6 +619,8 @@ async def execute_run(
                 timeout_seconds=settings.litellm_timeout_seconds,
             )
         completed += 1
+        if on_progress is not None:
+            on_progress(completed, len(work_items))
         print(
             f"run_id={run_id} progress={completed}/{len(work_items)} "
             f"error={record.error or 'None'}"

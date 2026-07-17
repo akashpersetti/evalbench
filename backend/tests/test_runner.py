@@ -1612,6 +1612,90 @@ async def test_execute_run_records_persists_and_continues_with_bounded_concurren
         assert secret not in progress
 
 
+async def test_execute_run_uses_provided_run_id_instead_of_generating_one(
+    monkeypatch, tmp_path: Path
+) -> None:
+    suite = FakeSuite()
+    completion = BoundedFakeCompletion(cap=2)
+    database_path = (tmp_path / "runner-fixed-id.db").resolve()
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    factory = create_session_factory(engine)
+    await init_db(engine)
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        litellm_timeout_seconds=4.0,
+        max_concurrency=2,
+    )
+    config = RunConfig(suite="fake", domain="overall", models=["openai/gpt-4o"])
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(registry_module, "SUITES", {})
+            registry_module.register_suite(suite)
+            scoped.setattr(runner_module, "get_settings", lambda: settings)
+            result = await runner_module.execute_run(
+                config,
+                session_factory=factory,
+                completion_fn=completion,
+                embedding_fn=lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("unexpected embedding call")
+                ),
+                run_id="caller-supplied-run-id",
+            )
+        persisted = await get_run_records(factory, "caller-supplied-run-id")
+    finally:
+        await engine.dispose()
+
+    assert result.run_id == "caller-supplied-run-id"
+    assert all(record.run_id == "caller-supplied-run-id" for record in result.records)
+    assert len(persisted) == 2
+
+
+async def test_execute_run_reports_progress_once_per_completed_task(
+    monkeypatch, tmp_path: Path
+) -> None:
+    suite = FakeSuite()
+    completion = BoundedFakeCompletion(cap=2)
+    database_path = (tmp_path / "runner-progress.db").resolve()
+    engine = create_engine(f"sqlite+aiosqlite:///{database_path}")
+    factory = create_session_factory(engine)
+    await init_db(engine)
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        litellm_timeout_seconds=4.0,
+        max_concurrency=4,
+    )
+    config = RunConfig(
+        suite="fake",
+        domain="overall",
+        models=["openai/gpt-4o", "anthropic/claude-sonnet-4-5"],
+    )
+    progress_calls: list[tuple[int, int]] = []
+
+    try:
+        with monkeypatch.context() as scoped:
+            scoped.setattr(registry_module, "SUITES", {})
+            registry_module.register_suite(suite)
+            scoped.setattr(runner_module, "get_settings", lambda: settings)
+            await runner_module.execute_run(
+                config,
+                session_factory=factory,
+                completion_fn=completion,
+                embedding_fn=lambda **kwargs: (_ for _ in ()).throw(
+                    AssertionError("unexpected embedding call")
+                ),
+                on_progress=lambda completed, total: progress_calls.append(
+                    (completed, total)
+                ),
+            )
+    finally:
+        await engine.dispose()
+
+    assert len(progress_calls) == 4
+    assert sorted(completed for completed, _ in progress_calls) == [1, 2, 3, 4]
+    assert all(total == 4 for _, total in progress_calls)
+
+
 async def test_structured_run_persists_complete_records_and_api_shapes(
     api_client, monkeypatch, tmp_path: Path
 ) -> None:
