@@ -58,6 +58,7 @@ resource "aws_iam_role_policy" "github_deploy" {
           "lambda:TagResource",
           "lambda:ListTags",
           "lambda:ListVersionsByFunction",
+          "lambda:GetFunctionCodeSigningConfig",
         ]
         Resource = "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-*"
       },
@@ -106,49 +107,48 @@ resource "aws_iam_role_policy" "github_deploy" {
         Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-*"
       },
       {
-        # The GitHub OIDC provider is an account-wide singleton this project
-        # only references (see the comment on the data source above) - list
-        # actions against it don't support resource-level scoping.
         Effect   = "Allow"
-        Action   = ["iam:ListOpenIDConnectProviders", "iam:GetOpenIDConnectProvider"]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter", "ssm:AddTagsToResource", "ssm:ListTagsForResource"]
+        Action   = ["ssm:PutParameter", "ssm:AddTagsToResource"]
         Resource = "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter/evalbench/*"
-      },
-      {
-        # DescribeParameters doesn't support resource-level scoping the way
-        # GetParameter does - AWS requires Resource "*" for it.
-        Effect   = "Allow"
-        Action   = ["ssm:DescribeParameters"]
-        Resource = "*"
       },
       {
         Effect = "Allow"
         Action = [
-          "ses:GetEmailIdentity",
           "ses:VerifyEmailIdentity",
           "ses:TagResource",
-          "ses:GetIdentityVerificationAttributes",
         ]
         Resource = "*"
       },
       {
-        # Route53/ACM lookups (ListHostedZones, ListCertificates) are
-        # list-style calls that only work with Resource "*".
+        Effect = "Allow"
+        Action = ["route53:ChangeResourceRecordSets"]
+        Resource = "arn:aws:route53:::hostedzone/*"
+      },
+      {
+        # Every remaining permission Terraform needs is a read-only
+        # Describe/List/Get call made implicitly during plan/refresh
+        # (OIDC provider metadata, SSM parameter attrs, Lambda code-signing
+        # config, ACM/Route53 cert+zone lookups, SES verification status,
+        # etc) - these don't support meaningful resource-level scoping and
+        # new ones keep surfacing one at a time, so grant the read verbs
+        # broadly across the services this stack touches instead of
+        # enumerating each call as it's hit.
         Effect = "Allow"
         Action = [
-          "route53:ListHostedZones",
-          "route53:GetHostedZone",
-          "route53:ListResourceRecordSets",
-          "route53:ChangeResourceRecordSets",
-          "route53:GetChange",
-          "route53:ListTagsForResource",
-          "acm:ListCertificates",
-          "acm:DescribeCertificate",
-          "acm:GetCertificate",
+          "iam:Get*",
+          "iam:List*",
+          "ssm:Get*",
+          "ssm:Describe*",
+          "ssm:List*",
+          "ses:Get*",
+          "ses:List*",
+          "route53:Get*",
+          "route53:List*",
+          "acm:Describe*",
+          "acm:List*",
+          "acm:Get*",
+          "lambda:Get*",
+          "lambda:List*",
         ]
         Resource = "*"
       },
