@@ -16,3 +16,8 @@ web/.next/
 
 backend/lambda-package/
 backend/lambda-deployment.zip
+
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+web/out/
