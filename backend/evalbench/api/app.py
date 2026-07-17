@@ -43,12 +43,21 @@ default_session_factory = create_session_factory(default_engine)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Initialize the default store at startup and release it at shutdown."""
-    await init_db(default_engine)
+    """Initialize the default store at startup and release it at shutdown.
+
+    In cloud mode (s3_db_bucket set), default_engine/default_session_factory
+    are never used - get_session_factory() takes the S3-backed cloud branch
+    for every request instead. Skipping init here matters because Lambda's
+    filesystem is read-only outside /tmp, and default_engine points at a
+    relative ./evalbench.db path that can't be created there.
+    """
+    if not get_settings().s3_db_bucket:
+        await init_db(default_engine)
     try:
         yield
     finally:
-        await default_engine.dispose()
+        if not get_settings().s3_db_bucket:
+            await default_engine.dispose()
 
 
 app = FastAPI(lifespan=lifespan)

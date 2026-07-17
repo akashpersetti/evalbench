@@ -12,12 +12,12 @@ mode that shipped undetected.
 import re
 from pathlib import Path
 
-TERRAFORM_DIR = Path(__file__).parent.parent.parent / "terraform"
+REPO_ROOT = Path(__file__).parent.parent.parent
+TERRAFORM_DIR = REPO_ROOT / "terraform"
 MAIN_TF = TERRAFORM_DIR / "main.tf"
 OUTPUTS_TF = TERRAFORM_DIR / "outputs.tf"
-DEPLOY_WORKFLOW = (
-    Path(__file__).parent.parent.parent / ".github" / "workflows" / "deploy.yml"
-)
+DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
+DEPLOY_PY = REPO_ROOT / "backend" / "deploy.py"
 
 REQUIRED_ENV_VAR_NAMES = {
     "REQUIRE_AUTH",
@@ -113,4 +113,20 @@ def test_deploy_workflow_output_names_exist_in_outputs_tf() -> None:
         f"deploy.yml references terraform output(s) {missing} that aren't "
         f"defined in outputs.tf (defined: {sorted(defined_outputs)}) — the "
         "'Set frontend build outputs' CI step would fail"
+    )
+
+
+def test_deploy_py_packages_the_data_directory() -> None:
+    """Every suite (structured/rag/latency_cost) resolves its dataset via
+
+    Path(__file__).resolve().parents[2] / "data" / <suite> - a sibling of
+    the evalbench/ package, not inside it. deploy.py previously copied only
+    evalbench/ into the zip, so RagSuite() (eagerly constructed at import
+    time in registry.py) crashed every cold start with FileNotFoundError,
+    taking down every route in the api Lambda.
+    """
+    content = DEPLOY_PY.read_text()
+    assert re.search(r'BACKEND_DIR\s*/\s*"data"', content), (
+        "backend/deploy.py must copy backend/data/ into the deployment zip "
+        "alongside evalbench/ — suites load their datasets from there"
     )

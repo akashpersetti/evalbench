@@ -374,7 +374,11 @@ resource "aws_lambda_function" "api" {
   handler          = "evalbench.lambda_handler.handler"
   runtime          = "python3.12"
   timeout          = 29
-  memory_size      = 512
+  # Lambda's INIT phase (module-level imports - litellm alone is heavy, plus
+  # FastAPI/SQLAlchemy/boto3 and eager suite construction in registry.py) has
+  # a hard, non-configurable 10s cap separate from `timeout` above. 512MB's
+  # CPU share wasn't enough; more memory buys more CPU during cold start.
+  memory_size      = 2048
 
   environment {
     variables = {
@@ -420,7 +424,9 @@ resource "aws_lambda_function" "runner" {
   handler          = "evalbench.runner_lambda.handler"
   runtime          = "python3.12"
   timeout          = 900
-  memory_size      = 1024
+  # Same 10s non-configurable INIT-phase cap as the api Lambda (see its
+  # comment) - runner_lambda.py imports the same heavy evalbench package.
+  memory_size      = 2048
 
   environment {
     variables = {

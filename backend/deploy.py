@@ -54,6 +54,12 @@ def main() -> None:
     print("Copying application code...")
     shutil.copytree(BACKEND_DIR / "evalbench", BUILD_DIR / "evalbench")
 
+    # Suites (structured, rag, latency_cost) load their task/corpus datasets
+    # from backend/data/, resolved relative to each suite module at import
+    # time (Path(__file__).resolve().parents[2] / "data") - that's a sibling
+    # of the evalbench/ package, not inside it, so it needs its own copy.
+    shutil.copytree(BACKEND_DIR / "data", BUILD_DIR / "data")
+
     print("Creating zip file...")
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in BUILD_DIR.rglob("*"):

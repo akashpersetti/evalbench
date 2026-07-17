@@ -2309,6 +2309,29 @@ async def test_api_lifespan_initializes_and_disposes_default_engine(
     assert events == [("init", engine), ("dispose", engine)]
 
 
+async def test_api_lifespan_skips_default_engine_in_cloud_mode(monkeypatch) -> None:
+    events: list[tuple[str, object]] = []
+
+    class FakeEngine:
+        async def dispose(self) -> None:
+            events.append(("dispose", self))
+
+    async def fake_init_db(engine: object) -> None:
+        events.append(("init", engine))
+
+    engine = FakeEngine()
+    monkeypatch.setattr(api_module, "default_engine", engine)
+    monkeypatch.setattr(api_module, "init_db", fake_init_db)
+    monkeypatch.setattr(
+        api_module, "get_settings", lambda: Settings(s3_db_bucket="evalbench-dev-db")
+    )
+
+    async with api_module.app.router.lifespan_context(api_module.app):
+        pass
+
+    assert events == []
+
+
 async def test_api_suites_is_empty_for_phase_one_registry(api_client) -> None:
     client, _ = api_client
 
