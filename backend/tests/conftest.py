@@ -11,3 +11,13 @@ def _dummy_aws_environment(monkeypatch):
     monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+
+
+from evalbench.cloud import ssm
+
+
+@pytest.fixture(autouse=True)
+def _clear_ssm_cache():
+    ssm.get_parameter.cache_clear()
+    yield
+    ssm.get_parameter.cache_clear()

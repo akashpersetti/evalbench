@@ -98,3 +98,30 @@ def test_run_status_records_error_message():
 def test_get_status_returns_none_for_missing_run():
     _create_run_status_table()
     assert run_status.get_status(RUN_STATUS_TABLE, "no-such-run") is None
+
+
+from evalbench.cloud import ssm
+
+
+@mock_aws
+def test_get_parameter_reads_and_caches_secure_string():
+    client = boto3.client("ssm", region_name="us-east-1")
+    client.put_parameter(
+        Name="/evalbench/test/admin-token",
+        Value="secret-value",
+        Type="SecureString",
+    )
+
+    assert ssm.get_parameter("/evalbench/test/admin-token") == "secret-value"
+
+    # Overwrite the parameter; the cached read should still return the old value.
+    client.put_parameter(
+        Name="/evalbench/test/admin-token",
+        Value="rotated-value",
+        Type="SecureString",
+        Overwrite=True,
+    )
+    assert ssm.get_parameter("/evalbench/test/admin-token") == "secret-value"
+
+    ssm.get_parameter.cache_clear()
+    assert ssm.get_parameter("/evalbench/test/admin-token") == "rotated-value"
