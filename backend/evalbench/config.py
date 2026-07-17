@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     admin_token: str | None = None
     aws_region: str = "us-east-1"
     s3_db_bucket: str | None = None
-    s3_db_key: str = "evalbench.db"
+    s3_db_prefix: str = "runs/"
     dynamodb_magic_tokens_table: str | None = None
     dynamodb_run_status_table: str | None = None
     cors_allowed_origins: str = "http://localhost:3000"
