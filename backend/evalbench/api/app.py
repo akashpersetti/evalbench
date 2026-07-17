@@ -159,6 +159,32 @@ async def runs(
     return {"run_id": result.run_id}
 
 
+def _start_run(
+    suite: Suite,
+    domain: str,
+    models: list[str],
+    judge_model: str,
+    run_status_table: str,
+    runner_function: str,
+) -> str:
+    """Create the run_status entry and invoke the runner Lambda; return its run_id."""
+    import uuid
+    from evalbench.cloud import lambda_invoke, run_status
+
+    run_id = str(uuid.uuid4())
+    tasks = suite.load_tasks(domain)
+    deduped_models = list(dict.fromkeys(models))
+    run_status.create_status(
+        run_status_table, run_id, total=len(tasks) * len(deduped_models)
+    )
+    lambda_invoke.invoke_runner_async(
+        runner_function,
+        run_id,
+        RunConfig(suite=suite.name, domain=domain, models=models, judge_model=judge_model),
+    )
+    return run_id
+
+
 @app.post("/runs/async")
 async def runs_async(
     config: RunConfig,
@@ -168,7 +194,6 @@ async def runs_async(
     settings = get_settings()
     suite = _resolve_suite(config.suite)
 
-    # Check that required cloud resources are configured
     if not settings.dynamodb_run_status_table:
         raise HTTPException(
             status_code=500,
@@ -180,28 +205,14 @@ async def runs_async(
             detail="Runner Lambda not configured"
         )
 
-    import uuid
-    from evalbench.cloud import run_status, lambda_invoke
-
-    run_id = str(uuid.uuid4())
-
-    # Create initial status in DynamoDB, sized to this suite/domain/models combination
-    tasks = suite.load_tasks(config.domain)
-    models = list(dict.fromkeys(config.models))
-    total_tasks = len(tasks) * len(models)
-    run_status.create_status(
-        settings.dynamodb_run_status_table,
-        run_id,
-        total=total_tasks
+    run_id = _start_run(
+        suite=suite,
+        domain=config.domain,
+        models=config.models,
+        judge_model=config.judge_model,
+        run_status_table=settings.dynamodb_run_status_table,
+        runner_function=settings.runner_lambda_function,
     )
-
-    # Invoke runner Lambda asynchronously
-    lambda_invoke.invoke_runner_async(
-        settings.runner_lambda_function,
-        run_id,
-        config
-    )
-
     return {"run_id": run_id}
 
 
