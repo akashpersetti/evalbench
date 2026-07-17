@@ -40,8 +40,12 @@ def main() -> None:
             "--entrypoint", "",
             "public.ecr.aws/lambda/python:3.12",
             "/bin/sh", "-c",
-            "pip install --target /var/task -r /var/task/requirements.txt "
-            "--platform manylinux2014_x86_64 --only-binary=:all: --upgrade",
+            # No --platform/--only-binary pin: we're already running pip inside
+            # the exact target Lambda runtime image, so its native wheel
+            # resolution is correct by construction. An explicit narrow tag
+            # like manylinux2014_x86_64 rejects newer packages (e.g. greenlet)
+            # that only ship wheels under newer manylinux tags.
+            "pip install --target /var/task -r /var/task/requirements.txt --upgrade",
         ],
         check=True,
     )
