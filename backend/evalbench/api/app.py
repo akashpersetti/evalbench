@@ -133,6 +133,10 @@ async def runs(
     _: Annotated[None, Depends(verify_token)] = None,
 ) -> dict[str, str]:
     """Execute one run to persistence before returning its identifier."""
+    if get_settings().s3_db_bucket:
+        raise HTTPException(
+            status_code=400, detail="Use /runs/async in cloud deployments"
+        )
     _resolve_suite(config.suite)
     result = await run_executor(config, session_factory=session_factory)
     return {"run_id": result.run_id}
@@ -145,7 +149,7 @@ async def runs_async(
 ) -> dict[str, str]:
     """Trigger an async suite run, returning immediately with run_id."""
     settings = get_settings()
-    _resolve_suite(config.suite)
+    suite = _resolve_suite(config.suite)
 
     # Check that required cloud resources are configured
     if not settings.dynamodb_run_status_table:
@@ -164,8 +168,10 @@ async def runs_async(
 
     run_id = str(uuid.uuid4())
 
-    # Create initial status in DynamoDB
-    total_tasks = len(next(iter(list_suites()), None).tasks or []) * len(config.models)
+    # Create initial status in DynamoDB, sized to this suite/domain/models combination
+    tasks = suite.load_tasks(config.domain)
+    models = list(dict.fromkeys(config.models))
+    total_tasks = len(tasks) * len(models)
     run_status.create_status(
         settings.dynamodb_run_status_table,
         run_id,
