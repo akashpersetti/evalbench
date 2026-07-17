@@ -2,6 +2,7 @@
 
 from evalbench.suites.base import Suite
 from evalbench.suites.latency_cost import LatencyCostSuite
+from evalbench.suites.rag import RagSuite
 from evalbench.suites.structured import StructuredSuite
 
 
@@ -33,3 +34,4 @@ def list_suites() -> list[Suite]:
 
 register_suite(StructuredSuite())
 register_suite(LatencyCostSuite())
+register_suite(RagSuite())
