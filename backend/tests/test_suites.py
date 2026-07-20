@@ -1218,6 +1218,7 @@ class DependencyUsingSuite(Suite):
             "key": "score",
             "label": "Score",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": True,
         }
     ]
@@ -1383,8 +1384,13 @@ def _assert_suite_contract(suite: Suite) -> None:
             "key",
             "label",
             "format",
+            "support",
             "higher_is_better",
         }
+        for display_metric in suite.display_metrics
+    )
+    assert all(
+        display_metric["support"] in {"proportion", "non_negative", "real"}
         for display_metric in suite.display_metrics
     )
     assert {

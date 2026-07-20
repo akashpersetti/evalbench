@@ -43,12 +43,14 @@ class LatencyCostSuite(Suite):
             "key": "quality_score",
             "label": "Pairwise win rate",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": True,
         },
         {
             "key": "judge_variance",
             "label": "Judge variance",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": False,
         },
     ]

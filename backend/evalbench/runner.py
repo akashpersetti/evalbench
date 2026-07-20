@@ -97,6 +97,28 @@ def normal_mean_interval(values: Sequence[float]) -> Estimate:
     return Estimate(mean=mean, n=n, ci_low=mean - half, ci_high=mean + half)
 
 
+def non_negative_mean_interval(values: Sequence[float]) -> Estimate:
+    """Return a 95% normal interval around the mean, clamped at zero.
+
+    Clamping (rather than bootstrapping) keeps this a small, deterministic
+    change to an existing formula instead of introducing a new resampling
+    dependency for what is fundamentally the same asymptotic-normal
+    approximation used elsewhere in this module. It is a known-conservative
+    fix: for genuinely skewed low-count data the true interval is narrower
+    than a clamped symmetric one, but the clamped bound is never wrong in
+    the way an unclamped negative bound is.
+    """
+    estimate = normal_mean_interval(values)
+    if estimate.ci_low is None:
+        return estimate
+    return Estimate(
+        mean=estimate.mean,
+        n=estimate.n,
+        ci_low=max(0.0, estimate.ci_low),
+        ci_high=estimate.ci_high,
+    )
+
+
 def _binomial_quantile(n: int, probability: float, quantile: float) -> int:
     if probability <= 0.0:
         return 0
@@ -195,6 +217,45 @@ def _stacked_breakdown(
     return StackedBreakdown(metric_key=metric_key, n=n, segments=segments)
 
 
+_VALID_SUPPORTS = {"proportion", "non_negative", "real"}
+
+
+def _support_by_metric(suite: Suite) -> dict[str, str]:
+    """Map each metric key to its declared statistical support.
+
+    Raises if any metric in ``suite.metric_keys`` has no declared support,
+    or an unrecognized one, rather than silently defaulting: a silent
+    default on missing metadata is how ``retries_to_valid`` ended up
+    routed through an interval with no lower clamp.
+    """
+    declared: dict[str, str] = {}
+    for metadata in suite.display_metrics:
+        key = metadata.get("key")
+        support = metadata.get("support")
+        if support not in _VALID_SUPPORTS:
+            raise ValueError(
+                f"suite {suite.name!r} metric {key!r} has invalid support "
+                f"{support!r}; must be one of {sorted(_VALID_SUPPORTS)}"
+            )
+        declared[key] = support
+
+    missing = [key for key in suite.metric_keys if key not in declared]
+    if missing:
+        raise ValueError(
+            f"suite {suite.name!r} is missing declared support for metrics: "
+            f"{sorted(missing)}"
+        )
+    return declared
+
+
+def _interval_for_support(support: str, values: Sequence[float]) -> Estimate:
+    if support == "proportion":
+        return wilson_interval(values)
+    if support == "non_negative":
+        return non_negative_mean_interval(values)
+    return normal_mean_interval(values)
+
+
 def aggregate_records(
     *,
     suite: Suite,
@@ -215,11 +276,7 @@ def aggregate_records(
         key = (record.model, record.provider, record.model_family)
         grouped.setdefault(key, []).append(record)
 
-    proportion_metrics = {
-        metadata.get("key")
-        for metadata in suite.display_metrics
-        if metadata.get("format") == "percent"
-    }
+    support_by_metric = _support_by_metric(suite)
     rows: list[AggregatedModelRow] = []
     for (model, provider, model_family), model_records in grouped.items():
         metrics: dict[str, Estimate] = {}
@@ -230,12 +287,9 @@ def aggregate_records(
                 for record in model_records
                 if metric_key in record.metrics
             ]
-            interval = (
-                wilson_interval(values)
-                if metric_key in proportion_metrics
-                else normal_mean_interval(values)
+            metrics[metric_key] = _interval_for_support(
+                support_by_metric[metric_key], values
             )
-            metrics[metric_key] = interval
 
             breakdown = _stacked_breakdown(model_records, metric_key)
             if breakdown is not None:

@@ -955,12 +955,14 @@ class FakeSuite(Suite):
             "key": "score",
             "label": "Score",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": True,
         },
         {
             "key": "output_length",
             "label": "Output length",
             "format": "number",
+            "support": "non_negative",
             "higher_is_better": True,
         },
     ]
@@ -1025,24 +1027,28 @@ class AggregationSuite(FakeSuite):
             "key": "quality_score",
             "label": "Quality",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": True,
         },
         {
             "key": "judge_variance",
             "label": "Judge variance",
             "format": "number",
+            "support": "real",
             "higher_is_better": False,
         },
         {
             "key": "category_score",
             "label": "Category",
             "format": "number",
+            "support": "real",
             "higher_is_better": True,
         },
         {
             "key": "missing_metric",
             "label": "Missing",
             "format": "percent",
+            "support": "proportion",
             "higher_is_better": True,
         },
     ]
@@ -1056,6 +1062,7 @@ class ContinuousAggregationSuite(FakeSuite):
             "key": "continuous_score",
             "label": "Continuous",
             "format": "number",
+            "support": "real",
             "higher_is_better": True,
         }
     ]
@@ -1502,6 +1509,116 @@ def test_aggregate_records_fallback_ties_ignore_input_order() -> None:
         for row in reversed_input.rows
     ] == expected
     assert all(row.stacked == {} for row in reversed_input.rows)
+
+
+def test_every_suite_metric_declares_support() -> None:
+    for suite in registry_module.list_suites():
+        declared = {
+            metadata.get("key"): metadata.get("support")
+            for metadata in suite.display_metrics
+        }
+        for metric_key in suite.metric_keys:
+            assert metric_key in declared, (
+                f"suite {suite.name!r} metric {metric_key!r} has no "
+                "display_metrics entry"
+            )
+            assert declared[metric_key] in {"proportion", "non_negative", "real"}, (
+                f"suite {suite.name!r} metric {metric_key!r} has "
+                f"undeclared or invalid support {declared[metric_key]!r}"
+            )
+
+
+@pytest.mark.parametrize("suite", registry_module.list_suites(), ids=lambda suite: suite.name)
+def test_aggregate_records_intervals_stay_within_declared_support(
+    suite: Suite,
+) -> None:
+    support_by_metric = {
+        metadata["key"]: metadata["support"] for metadata in suite.display_metrics
+    }
+    proportion_values = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.5, 1.0, 0.0]
+    unbounded_values = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 3.0, 5.0, 12.5]
+
+    def synthetic_value(metric_key: str, index: int) -> float:
+        values = (
+            proportion_values
+            if support_by_metric[metric_key] == "proportion"
+            else unbounded_values
+        )
+        return values[index % len(values)]
+
+    records = [
+        make_metric_record(
+            record_id=f"support-invariant-{index}",
+            suite=suite.name,
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={
+                metric_key: synthetic_value(metric_key, index)
+                for metric_key in suite.metric_keys
+            },
+        )
+        for index in range(len(proportion_values))
+    ]
+
+    response = runner_module.aggregate_records(
+        suite=suite,
+        records=records,
+        domain="overall",
+        exclude_refusals=False,
+    )
+
+    for row in response.rows:
+        for metric_key, estimate in row.metrics.items():
+            support = support_by_metric[metric_key]
+            if estimate.ci_low is None:
+                continue
+            if support == "proportion":
+                assert 0.0 <= estimate.ci_low
+                assert estimate.ci_high <= 1.0
+            elif support == "non_negative":
+                assert estimate.ci_low >= 0.0
+
+
+def test_retries_to_valid_confidence_interval_has_no_negative_lower_bound() -> None:
+    """Regression test: mostly-zero retry counts must not yield a negative CI.
+
+    Reproduces the reported case: structured suite, retries_to_valid, 40
+    records that are mostly 0.0 with one outlier requiring 5 retries
+    (mean 0.125). Before the support-based routing fix, this metric was
+    declared "format": "number" and fell through to the unclamped
+    normal_mean_interval, publishing a 95% CI (mean=0.125, ci_low=-0.12)
+    for a quantity that cannot be negative.
+    """
+    structured_suite = registry_module.get_suite("structured")
+    retry_values = [5.0] + [0.0] * 39
+    records = [
+        make_metric_record(
+            record_id=f"retries-{index}",
+            suite="structured",
+            latency_ms=1.0,
+            cost_usd=1.0,
+            metrics={
+                "first_attempt_valid": 1.0,
+                "schema_valid": 1.0,
+                "retries_to_valid": value,
+                "retry_cost_usd": 0.0,
+                "field_accuracy": 1.0,
+            },
+        )
+        for index, value in enumerate(retry_values)
+    ]
+
+    response = runner_module.aggregate_records(
+        suite=structured_suite,
+        records=records,
+        domain="overall",
+        exclude_refusals=False,
+    )
+
+    estimate = response.rows[0].metrics["retries_to_valid"]
+    assert estimate.mean == pytest.approx(0.125)
+    assert estimate.ci_low is not None
+    assert estimate.ci_low >= 0.0
 
 
 class DetectorFailingFakeSuite(FakeSuite):
@@ -1961,30 +2078,35 @@ async def test_structured_run_persists_complete_records_and_api_shapes(
                     "key": "schema_valid",
                     "label": "Schema valid",
                     "format": "percent",
+                    "support": "proportion",
                     "higher_is_better": True,
                 },
                 {
                     "key": "first_attempt_valid",
                     "label": "First-attempt valid",
                     "format": "percent",
+                    "support": "proportion",
                     "higher_is_better": True,
                 },
                 {
                     "key": "field_accuracy",
                     "label": "Field accuracy",
                     "format": "percent",
+                    "support": "proportion",
                     "higher_is_better": True,
                 },
                 {
                     "key": "retries_to_valid",
                     "label": "Retries to valid",
                     "format": "number",
+                    "support": "non_negative",
                     "higher_is_better": False,
                 },
                 {
                     "key": "retry_cost_usd",
                     "label": "Retry cost",
                     "format": "currency",
+                    "support": "non_negative",
                     "higher_is_better": False,
                 },
             ],
